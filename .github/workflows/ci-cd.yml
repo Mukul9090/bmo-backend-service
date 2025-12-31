@@ -1,4 +1,4 @@
-name: CI-CD Pipeline (Docker + Kubernetes using KIND)
+name: CI-CD Pipeline (Self-Hosted Runner)
 
 on:
   push:
@@ -7,72 +7,36 @@ on:
 
 jobs:
   ci-cd:
-    runs-on: ubuntu-latest
+    runs-on:
+      - self-hosted
+      - macOS
+      - ARM64
 
     steps:
-      # -----------------------------
-      # 1️⃣ Checkout source code
-      # -----------------------------
+      # 1️⃣ Checkout code
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # -----------------------------
-      # 2️⃣ Login to Docker Hub
-      # -----------------------------
-      - name: Login to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
-
-      # -----------------------------
-      # 3️⃣ Build & Push Docker Image
-      # -----------------------------
-      - name: Build and Push Docker Image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          push: true
-          tags: mukul1599/backend-service:latest
-
-      # -----------------------------
-      # 4️⃣ Install kubectl
-      # -----------------------------
-      - name: Install kubectl
-        uses: azure/setup-kubectl@v4
-        with:
-          version: v1.29.0
-
-      # -----------------------------
-      # 5️⃣ Install KIND
-      # -----------------------------
-      - name: Install KIND
+      # 2️⃣ Build Docker image locally
+      - name: Build Docker Image
         run: |
-          curl -Lo kind https://kind.sigs.k8s.io/dl/v0.23.0/kind-linux-amd64
-          chmod +x kind
-          sudo mv kind /usr/local/bin/kind
+          docker build -t mukul1599/backend-service:latest .
 
-      # -----------------------------
-      # 6️⃣ Create Kubernetes Cluster
-      # -----------------------------
-      - name: Create KIND Cluster
+      # 3️⃣ Push image to Docker Hub (optional but recommended)
+      - name: Push Docker Image
         run: |
-          kind create cluster --name ci-cluster
+          docker push mukul1599/backend-service:latest
 
-      # -----------------------------
-      # 7️⃣ Deploy Application to Kubernetes
-      # -----------------------------
-      - name: Deploy to Kubernetes
+      # 4️⃣ Deploy to Minikube
+      - name: Deploy to Kubernetes (Minikube)
         run: |
           kubectl apply -f k8s/namespace.yaml
           kubectl apply -f k8s/configmap-hot.yaml
           kubectl apply -f k8s/deployment.yaml
           kubectl apply -f k8s/service.yaml
 
-      # -----------------------------
-      # 8️⃣ Verify Deployment
-      # -----------------------------
-      - name: Verify Pods and Services
+      # 5️⃣ Verify deployment
+      - name: Verify Pods
         run: |
           kubectl get pods -n backend
           kubectl get svc -n backend
