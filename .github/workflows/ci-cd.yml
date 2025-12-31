@@ -1,4 +1,4 @@
-name: CI-CD Pipeline (Self-Hosted Runner)
+name: CI-CD Pipeline (Self-Hosted Runner + Visible URL)
 
 on:
   push:
@@ -22,7 +22,7 @@ jobs:
         run: |
           docker build -t mukul1599/backend-service:latest .
 
-      # 3️⃣ Push image to Docker Hub (optional but recommended)
+      # 3️⃣ Push image to Docker Hub
       - name: Push Docker Image
         run: |
           docker push mukul1599/backend-service:latest
@@ -35,8 +35,21 @@ jobs:
           kubectl apply -f k8s/deployment.yaml
           kubectl apply -f k8s/service.yaml
 
-      # 5️⃣ Verify deployment
-      - name: Verify Pods
+      # 5️⃣ Wait for pods to be ready
+      - name: Wait for Pods
         run: |
-          kubectl get pods -n backend
-          kubectl get svc -n backend
+          kubectl rollout status deployment/backend-service -n backend --timeout=120s
+
+      # 6️⃣ Print Service URL (🔥 IMPORTANT 🔥)
+      - name: Show Application URL
+        run: |
+          echo "========================================"
+          echo "🚀 Application is running at:"
+          minikube service backend-service -n backend --url
+          echo "========================================"
+
+      # 7️⃣ Verify health endpoint
+      - name: Health Check
+        run: |
+          URL=$(minikube service backend-service -n backend --url)
+          curl "$URL/healthz"
