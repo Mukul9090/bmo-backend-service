@@ -20,7 +20,7 @@ spec:
         runAsUser: 1000
       containers:
         - name: backend-service
-          image: mukul1599/backend-service:latest
+          image: mukul9090/bmo-backend-service:latest
           imagePullPolicy: Always
           ports:
             - containerPort: 8080
@@ -54,3 +54,4 @@ spec:
             timeoutSeconds: 3
             successThreshold: 1
             failureThreshold: 3
+
