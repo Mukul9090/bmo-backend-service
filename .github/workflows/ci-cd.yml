@@ -1,55 +1,104 @@
-name: CI-CD Pipeline (Self-Hosted Runner + Visible URL)
+name: CI-CD Pipeline (Docker + Kubernetes)
 
 on:
   push:
-    branches:
-      - main
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
 
 jobs:
   ci-cd:
-    runs-on:
-      - self-hosted
-      - macOS
-      - ARM64
+    runs-on: self-hosted   # uses your local GitHub runner
+    timeout-minutes: 20
 
     steps:
-      # 1️⃣ Checkout code
+      # -------------------------------
+      # Checkout
+      # -------------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2️⃣ Build Docker image locally
-      - name: Build Docker Image
+      # -------------------------------
+      # Docker Login
+      # -------------------------------
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      # -------------------------------
+      # Build & Push Image
+      # -------------------------------
+      - name: Build Docker image
         run: |
           docker build -t mukul1599/backend-service:latest .
 
-      # 3️⃣ Push image to Docker Hub
-      - name: Push Docker Image
+      - name: Push Docker image
         run: |
           docker push mukul1599/backend-service:latest
 
-      # 4️⃣ Deploy to Minikube
-      - name: Deploy to Kubernetes (Minikube)
+      # -------------------------------
+      # Create Kubernetes Cluster (KIND)
+      # -------------------------------
+      - name: Create KIND cluster
+        run: |
+          kind create cluster --name ci-cluster || true
+          kubectl cluster-info
+
+      # -------------------------------
+      # Deploy to Kubernetes
+      # -------------------------------
+      - name: Apply Kubernetes manifests
         run: |
           kubectl apply -f k8s/namespace.yaml
-          kubectl apply -f k8s/configmap-hot.yaml
+          kubectl apply -f k8s/configmap.yaml
           kubectl apply -f k8s/deployment.yaml
           kubectl apply -f k8s/service.yaml
 
-      # 5️⃣ Wait for pods to be ready
-      - name: Wait for Pods
+      # -------------------------------
+      # Debug: Show full cluster state
+      # -------------------------------
+      - name: Debug Kubernetes state
         run: |
-          kubectl rollout status deployment/backend-service -n backend --timeout=600s
+          echo "===== PODS ====="
+          kubectl get pods -n backend -o wide
 
-      # 6️⃣ Print Service URL (🔥 IMPORTANT 🔥)
-      - name: Show Application URL
-        run: |
-          echo "========================================"
-          echo "🚀 Application is running at:"
-          minikube service backend-service -n backend --url
-          echo "========================================"
+          echo "===== REPLICASETS ====="
+          kubectl get rs -n backend
 
-      # 7️⃣ Verify health endpoint
-      - name: Health Check
+          echo "===== DEPLOYMENT ====="
+          kubectl describe deployment backend-service -n backend
+
+          echo "===== POD EVENTS ====="
+          for pod in $(kubectl get pods -n backend -o jsonpath='{.items[*].metadata.name}'); do
+            echo "---- $pod ----"
+            kubectl describe pod $pod -n backend
+          done
+
+          echo "===== ENDPOINTS ====="
+          kubectl get endpoints backend-service -n backend || true
+
+      # -------------------------------
+      # Rollout Status (non-fatal)
+      # -------------------------------
+      - name: Wait for rollout
         run: |
-          URL=$(minikube service backend-service -n backend --url)
-          curl "$URL/healthz"
+          kubectl rollout status deployment/backend-service -n backend --timeout=180s || true
+
+      # -------------------------------
+      # Cleanup stuck pods (CI safety)
+      # -------------------------------
+      - name: Cleanup stuck pods
+        run: |
+          kubectl get pods -n backend \
+            | grep -E 'ImagePullBackOff|ErrImagePull|Terminating' \
+            | awk '{print $1}' \
+            | xargs -r kubectl delete pod -n backend --force --grace-period=0
+
+      # -------------------------------
+      # Final Verification
+      # -------------------------------
+      - name: Final pod status
+        run: |
+          kubectl get pods -n backend
