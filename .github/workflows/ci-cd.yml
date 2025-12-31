@@ -1,105 +1,96 @@
-name: CI-CD Pipeline with HAProxy Failover
+name: CI-CD Pipeline (Self-Hosted Runner + HAProxy 9090)
 
 on:
   push:
-    branches: ["main"]
-  pull_request:
-    branches: ["main"]
+    branches:
+      - main
 
 jobs:
   ci-cd:
-    runs-on: self-hosted
+    runs-on:
+      - self-hosted
+      - macOS
+      - ARM64
+
     timeout-minutes: 20
 
     steps:
-      # -------------------------------
-      # Checkout
-      # -------------------------------
-      - name: Checkout code
+      # 1️⃣ Checkout code
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      # -------------------------------
-      # Docker login
-      # -------------------------------
-      - name: Login to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
+      # 2️⃣ Docker Hub Login
+      - name: Docker Hub Login
+        run: |
+          echo "${{ secrets.DOCKER_PASSWORD }}" | docker login \
+            -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
 
-      # -------------------------------
-      # Build & push image
-      # -------------------------------
-      - name: Build Docker image
+      # 3️⃣ Build Docker image
+      - name: Build Docker Image
         run: |
           docker build -t mukul1599/backend-service:latest .
 
-      - name: Push Docker image
+      # 4️⃣ Push image
+      - name: Push Docker Image
         run: |
           docker push mukul1599/backend-service:latest
 
-      # -------------------------------
-      # Create KIND cluster
-      # -------------------------------
-      - name: Create Kubernetes cluster
+      # 5️⃣ Ensure Minikube is running
+      - name: Start Minikube
         run: |
-          kind create cluster --name ci-cluster || true
-          kubectl cluster-info
+          minikube status || minikube start --driver=docker
+          kubectl config use-context minikube
 
-      # -------------------------------
-      # Deploy application
-      # -------------------------------
-      - name: Deploy backend service
+      # 6️⃣ Deploy to Kubernetes
+      - name: Deploy to Kubernetes
         run: |
           kubectl apply -f k8s/namespace.yaml
-          kubectl apply -f k8s/configmap.yaml
+          kubectl apply -f k8s/configmap-hot.yaml
           kubectl apply -f k8s/deployment.yaml
           kubectl apply -f k8s/service.yaml
 
-      # -------------------------------
-      # Wait briefly (non-blocking)
-      # -------------------------------
-      - name: Short wait for pods
-        run: sleep 20
+      # 7️⃣ Short wait (DO NOT BLOCK CI)
+      - name: Wait briefly for pods
+        run: sleep 25
 
-      # -------------------------------
-      # Debug Kubernetes
-      # -------------------------------
-      - name: Kubernetes status
+      # 8️⃣ Debug (VERY IMPORTANT FOR CI)
+      - name: Kubernetes Debug Info
         run: |
-          echo "==== Pods ===="
+          echo "====== Pods ======"
           kubectl get pods -n backend -o wide
 
-          echo "==== Services ===="
+          echo "====== ReplicaSets ======"
+          kubectl get rs -n backend
+
+          echo "====== Services ======"
           kubectl get svc -n backend
 
-      # -------------------------------
-      # Get service URLs
-      # -------------------------------
-      - name: Get service URLs
+      # 9️⃣ Print Minikube Service URL
+      - name: Show Minikube Service URL
         run: |
-          HOT_URL=$(minikube service backend-service -n backend --url || true)
-          echo "HOT_URL=$HOT_URL" >> $GITHUB_ENV
+          echo "========================================"
+          echo "🚀 Minikube Service URL:"
+          MINIKUBE_URL=$(minikube service backend-service -n backend --url)
+          echo "$MINIKUBE_URL"
+          echo "MINIKUBE_URL=$MINIKUBE_URL" >> $GITHUB_ENV
+          echo "========================================"
 
-      # -------------------------------
-      # Start HAProxy (PORT 9090)
-      # -------------------------------
-      - name: Start HAProxy load balancer
+      # 🔟 Start HAProxy (PORT 9090)
+      - name: Start HAProxy Load Balancer
         run: |
           echo "Starting HAProxy on port 9090"
+          docker rm -f haproxy-ci || true
           docker run -d \
             --name haproxy-ci \
             -p 9090:9090 \
             -v $PWD/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg \
             haproxy:2.9
 
-      # -------------------------------
-      # Validate HAProxy
-      # -------------------------------
-      - name: Test HAProxy routing
+      # 1️⃣1️⃣ Test HAProxy (KEY STEP)
+      - name: Test HAProxy Endpoint
         run: |
           echo "========================================"
-          echo "HAProxy running at:"
+          echo "🚦 HAProxy Endpoint:"
           echo "http://localhost:9090"
           echo "========================================"
 
@@ -107,10 +98,8 @@ jobs:
           curl -v http://localhost:9090/healthz || true
           curl -v http://localhost:9090 || true
 
-      # -------------------------------
-      # Final cleanup (optional)
-      # -------------------------------
-      - name: Cleanup
+      # 1️⃣2️⃣ Cleanup (optional but clean)
+      - name: Cleanup HAProxy
         if: always()
         run: |
           docker rm -f haproxy-ci || true
