@@ -2,6 +2,8 @@
 
 A minimal Flask REST API for demonstrating hot/standby failover behavior.
 
+![CI](https://github.com/YOUR_USERNAME/YOUR_REPO/workflows/CI/badge.svg)
+
 ## Project Structure
 
 ```
@@ -132,3 +134,26 @@ To demonstrate failover behavior:
 3. Monitor both instances using their `/healthz` endpoints
 4. Simulate a failure by stopping the hot instance
 5. The standby instance can then be promoted to hot (by restarting with `CLUSTER_ROLE=hot`)
+
+## CI/CD
+
+This project uses GitHub Actions for continuous integration and deployment:
+
+- **CI**: Runs on every push/PR - tests, builds Docker image, and validates code
+- **CD**: Builds and pushes images to GitHub Container Registry on pushes to `main`
+- **Release**: Builds and pushes release images when creating GitHub releases
+
+See [.github/workflows/README.md](.github/workflows/README.md) for detailed workflow documentation.
+
+### Running Tests Locally
+
+```bash
+# Install test dependencies
+pip install -r requirements.txt
+
+# Run tests
+pytest
+
+# Run with coverage
+pytest --cov=server --cov-report=html
+```
