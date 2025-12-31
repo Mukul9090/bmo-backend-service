@@ -20,8 +20,8 @@ spec:
         runAsUser: 1000
       containers:
         - name: backend-service
-          image: backend-service:latest
-          imagePullPolicy: IfNotPresent
+          image: mukul1599/backend-service:latest
+          imagePullPolicy: Always
           ports:
             - containerPort: 8080
               name: http

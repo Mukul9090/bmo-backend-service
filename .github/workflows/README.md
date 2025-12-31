@@ -20,7 +20,17 @@ Runs on pushes to `main` branch.
 - **Deploy**: Deploys to Kubernetes (requires cluster configuration)
 
 **Required Secrets:**
+- `DOCKERHUB_TOKEN`: Docker Hub access token (required for pushing to Docker Hub)
 - `KUBECONFIG`: Base64-encoded kubeconfig file (optional, for deployment)
+
+**Docker Hub Setup:**
+1. Go to Docker Hub: https://hub.docker.com/settings/security
+2. Create an access token
+3. Add as GitHub Secret:
+   - Go to: Settings → Secrets and variables → Actions
+   - Click "New repository secret"
+   - Name: `DOCKERHUB_TOKEN`
+   - Value: (paste your Docker Hub access token)
 
 ### 3. Release (`release.yml`)
 Runs when a new GitHub release is created.
@@ -54,8 +64,15 @@ If you want automatic deployment to Kubernetes:
 
 ## Image Registry
 
-Images are pushed to GitHub Container Registry:
-- Format: `ghcr.io/YOUR_USERNAME/YOUR_REPO:tag`
+Images are pushed to both Docker Hub and GitHub Container Registry:
+
+**Docker Hub:**
+- Format: `mukul9090/bmo-backend-service:tag`
+- Publicly accessible at: https://hub.docker.com/r/mukul9090/bmo-backend-service
+- Tags: `main`, `latest`, `main-<sha>`, version tags
+
+**GitHub Container Registry:**
+- Format: `ghcr.io/Mukul9090/bmo-backend-service:tag`
 - Tags: `main`, `latest`, `main-<sha>`, version tags
 
 ## Manual Workflow Triggers
