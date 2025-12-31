@@ -1,4 +1,4 @@
-name: CI-CD Pipeline (Self-Hosted Runner + HAProxy 9090)
+name: CI-CD Pipeline (Self-Hosted Runner + Minikube + HAProxy)
 
 on:
   push:
@@ -15,33 +15,53 @@ jobs:
     timeout-minutes: 20
 
     steps:
-      # 1️⃣ Checkout code
+      # --------------------------------------------------
+      # 1️⃣ Checkout
+      # --------------------------------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # --------------------------------------------------
       # 2️⃣ Docker Hub Login
+      # --------------------------------------------------
       - name: Docker Hub Login
         run: |
           echo "${{ secrets.DOCKER_PASSWORD }}" | docker login \
             -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
 
-      # 3️⃣ Build Docker image
+      # --------------------------------------------------
+      # 3️⃣ Build & Push Image
+      # --------------------------------------------------
       - name: Build Docker Image
         run: |
           docker build -t mukul1599/backend-service:latest .
 
-      # 4️⃣ Push image
       - name: Push Docker Image
         run: |
           docker push mukul1599/backend-service:latest
 
-      # 5️⃣ Ensure Minikube is running
+      # --------------------------------------------------
+      # 4️⃣ Ensure Minikube is running
+      # --------------------------------------------------
       - name: Start Minikube
         run: |
           minikube status || minikube start --driver=docker
           kubectl config use-context minikube
 
-      # 6️⃣ Deploy to Kubernetes
+      # --------------------------------------------------
+      # 🔥 5️⃣ CLEAN OLD K8s STATE (CRITICAL FIX)
+      # --------------------------------------------------
+      - name: Cleanup old Kubernetes resources (CI safety)
+        run: |
+          echo "Cleaning stale backend-service resources"
+          kubectl delete deployment backend-service -n backend --ignore-not-found
+          kubectl delete rs -n backend -l app=backend-service --ignore-not-found
+          kubectl delete pod -n backend -l app=backend-service \
+            --force --grace-period=0 || true
+
+      # --------------------------------------------------
+      # 6️⃣ Deploy Fresh Manifests
+      # --------------------------------------------------
       - name: Deploy to Kubernetes
         run: |
           kubectl apply -f k8s/namespace.yaml
@@ -49,11 +69,15 @@ jobs:
           kubectl apply -f k8s/deployment.yaml
           kubectl apply -f k8s/service.yaml
 
-      # 7️⃣ Short wait (DO NOT BLOCK CI)
+      # --------------------------------------------------
+      # 7️⃣ Short wait (NON-BLOCKING)
+      # --------------------------------------------------
       - name: Wait briefly for pods
         run: sleep 25
 
-      # 8️⃣ Debug (VERY IMPORTANT FOR CI)
+      # --------------------------------------------------
+      # 8️⃣ Kubernetes Debug Info (VISIBLE IN CI)
+      # --------------------------------------------------
       - name: Kubernetes Debug Info
         run: |
           echo "====== Pods ======"
@@ -65,17 +89,19 @@ jobs:
           echo "====== Services ======"
           kubectl get svc -n backend
 
-      # 9️⃣ Print Minikube Service URL
+      # --------------------------------------------------
+      # 9️⃣ Show Minikube Service URL (CI-safe)
+      # --------------------------------------------------
       - name: Show Minikube Service URL
         run: |
           echo "========================================"
-          echo "🚀 Minikube Service URL:"
-          MINIKUBE_URL=$(minikube service backend-service -n backend --url)
-          echo "$MINIKUBE_URL"
-          echo "MINIKUBE_URL=$MINIKUBE_URL" >> $GITHUB_ENV
+          echo "🚀 Minikube Service URL (local runner):"
+          minikube service backend-service -n backend --url || true
           echo "========================================"
 
-      # 🔟 Start HAProxy (PORT 9090)
+      # --------------------------------------------------
+      # 🔟 Start HAProxy on port 9090
+      # --------------------------------------------------
       - name: Start HAProxy Load Balancer
         run: |
           echo "Starting HAProxy on port 9090"
@@ -86,19 +112,22 @@ jobs:
             -v $PWD/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg \
             haproxy:2.9
 
-      # 1️⃣1️⃣ Test HAProxy (KEY STEP)
+      # --------------------------------------------------
+      # 1️⃣1️⃣ Test HAProxy Endpoint
+      # --------------------------------------------------
       - name: Test HAProxy Endpoint
         run: |
           echo "========================================"
-          echo "🚦 HAProxy Endpoint:"
+          echo "🚦 HAProxy URL (local runner):"
           echo "http://localhost:9090"
           echo "========================================"
-
           sleep 5
           curl -v http://localhost:9090/healthz || true
           curl -v http://localhost:9090 || true
 
-      # 1️⃣2️⃣ Cleanup (optional but clean)
+      # --------------------------------------------------
+      # 1️⃣2️⃣ Cleanup (always)
+      # --------------------------------------------------
       - name: Cleanup HAProxy
         if: always()
         run: |
