@@ -1,60 +1,78 @@
-name: CI-CD with Kubernetes (KIND)
+name: CI-CD Pipeline (Docker + Kubernetes using KIND)
 
 on:
   push:
-    branches: [ "main" ]
+    branches:
+      - main
 
 jobs:
-  build-deploy:
+  ci-cd:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      # -----------------------------
+      # 1️⃣ Checkout source code
+      # -----------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    # 🔐 Docker login
-    - name: Login to Docker Hub
-      uses: docker/login-action@v3
-      with:
-        username: ${{ secrets.DOCKER_USERNAME }}
-        password: ${{ secrets.DOCKER_PASSWORD }}
+      # -----------------------------
+      # 2️⃣ Login to Docker Hub
+      # -----------------------------
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
 
-    # 🐳 Build & push image
-    - name: Build and Push Docker image
-      uses: docker/build-push-action@v5
-      with:
-        context: .
-        push: true
-        tags: mukul1599/backend-service:latest
+      # -----------------------------
+      # 3️⃣ Build & Push Docker Image
+      # -----------------------------
+      - name: Build and Push Docker Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: mukul1599/backend-service:latest
 
-    # ☸️ Install kubectl
-    - name: Install kubectl
-      uses: azure/setup-kubectl@v4
-      with:
-        version: v1.29.0
+      # -----------------------------
+      # 4️⃣ Install kubectl
+      # -----------------------------
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: v1.29.0
 
-    # ☸️ Install KIND
-    - name: Install KIND
-      run: |
-        curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.23.0/kind-linux-amd64
-        chmod +x ./kind
-        sudo mv ./kind /usr/local/bin/kind
+      # -----------------------------
+      # 5️⃣ Install KIND
+      # -----------------------------
+      - name: Install KIND
+        run: |
+          curl -Lo kind https://kind.sigs.k8s.io/dl/v0.23.0/kind-linux-amd64
+          chmod +x kind
+          sudo mv kind /usr/local/bin/kind
 
-    # ☸️ Create Kubernetes cluster
-    - name: Create KIND cluster
-      run: |
-        kind create cluster --name ci-cluster
+      # -----------------------------
+      # 6️⃣ Create Kubernetes Cluster
+      # -----------------------------
+      - name: Create KIND Cluster
+        run: |
+          kind create cluster --name ci-cluster
 
-    # 🚀 Deploy to Kubernetes
-    - name: Deploy app to Kubernetes
-      run: |
-        kubectl create namespace backend || true
-        kubectl apply -f k8s/configmap.yaml
-        kubectl apply -f k8s/deployment.yaml
-        kubectl apply -f k8s/service.yaml
+      # -----------------------------
+      # 7️⃣ Deploy Application to Kubernetes
+      # -----------------------------
+      - name: Deploy to Kubernetes
+        run: |
+          kubectl apply -f k8s/namespace.yaml
+          kubectl apply -f k8s/configmap-hot.yaml
+          kubectl apply -f k8s/deployment.yaml
+          kubectl apply -f k8s/service.yaml
 
-    # 🔍 Verify deployment
-    - name: Verify Pods
-      run: |
-        kubectl get pods -n backend
-        kubectl get svc -n backend
+      # -----------------------------
+      # 8️⃣ Verify Deployment
+      # -----------------------------
+      - name: Verify Pods and Services
+        run: |
+          kubectl get pods -n backend
+          kubectl get svc -n backend
