@@ -33,15 +33,13 @@ jobs:
       # 3️⃣ Build & Push Image
       # --------------------------------------------------
       - name: Build Docker Image
-        run: |
-          docker build -t mukul1599/backend-service:latest .
+        run: docker build -t mukul1599/backend-service:latest .
 
       - name: Push Docker Image
-        run: |
-          docker push mukul1599/backend-service:latest
+        run: docker push mukul1599/backend-service:latest
 
       # --------------------------------------------------
-      # 4️⃣ Ensure Minikube is running
+      # 4️⃣ Start / Reuse Minikube
       # --------------------------------------------------
       - name: Start Minikube
         run: |
@@ -49,18 +47,17 @@ jobs:
           kubectl config use-context minikube
 
       # --------------------------------------------------
-      # 🔥 5️⃣ CLEAN OLD K8s STATE (CRITICAL FIX)
+      # 5️⃣ Clean stale K8s resources (CI-safe)
       # --------------------------------------------------
-      - name: Cleanup old Kubernetes resources (CI safety)
+      - name: Cleanup old Kubernetes resources
         run: |
-          echo "Cleaning stale backend-service resources"
           kubectl delete deployment backend-service -n backend --ignore-not-found
           kubectl delete rs -n backend -l app=backend-service --ignore-not-found
           kubectl delete pod -n backend -l app=backend-service \
             --force --grace-period=0 || true
 
       # --------------------------------------------------
-      # 6️⃣ Deploy Fresh Manifests
+      # 6️⃣ Deploy manifests
       # --------------------------------------------------
       - name: Deploy to Kubernetes
         run: |
@@ -70,13 +67,13 @@ jobs:
           kubectl apply -f k8s/service.yaml
 
       # --------------------------------------------------
-      # 7️⃣ Short wait (NON-BLOCKING)
+      # 7️⃣ Short wait (don’t block CI)
       # --------------------------------------------------
-      - name: Wait briefly for pods
+      - name: Wait briefly
         run: sleep 25
 
       # --------------------------------------------------
-      # 8️⃣ Kubernetes Debug Info (VISIBLE IN CI)
+      # 8️⃣ Debug output (visible in CI UI)
       # --------------------------------------------------
       - name: Kubernetes Debug Info
         run: |
@@ -90,45 +87,56 @@ jobs:
           kubectl get svc -n backend
 
       # --------------------------------------------------
-      # 9️⃣ Show Minikube Service URL (CI-safe)
+      # 9️⃣ Detect Minikube Service Port
       # --------------------------------------------------
-      - name: Show Minikube Service URL
+      - name: Detect Minikube Service Port
+        id: minikube-port
         run: |
-          echo "========================================"
-          echo "🚀 Minikube Service URL (local runner):"
-          minikube service backend-service -n backend --url || true
-          echo "========================================"
+          SERVICE_URL=$(minikube service backend-service -n backend --url)
+          echo "Minikube URL: $SERVICE_URL"
+
+          PORT=$(echo $SERVICE_URL | sed -E 's/.*:([0-9]+)$/\1/')
+          echo "Detected Port: $PORT"
+
+          echo "PORT=$PORT" >> $GITHUB_ENV
 
       # --------------------------------------------------
-      # 🔟 Start HAProxy on port 9090
+      # 🔟 Generate HAProxy config dynamically
+      # --------------------------------------------------
+      - name: Generate HAProxy Config
+        run: |
+          sed "s/MINIKUBE_PORT/${PORT}/g" haproxy.cfg > haproxy.ci.cfg
+          echo "====== HAProxy Config ======"
+          cat haproxy.ci.cfg
+
+      # --------------------------------------------------
+      # 1️⃣1️⃣ Start HAProxy (WORKING FIX)
       # --------------------------------------------------
       - name: Start HAProxy Load Balancer
         run: |
-          echo "Starting HAProxy on port 9090"
           docker rm -f haproxy-ci || true
           docker run -d \
             --name haproxy-ci \
             -p 9090:9090 \
-            -v $PWD/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg \
+            -v $PWD/haproxy.ci.cfg:/usr/local/etc/haproxy/haproxy.cfg \
             haproxy:2.9
 
       # --------------------------------------------------
-      # 1️⃣1️⃣ Test HAProxy Endpoint
+      # 1️⃣2️⃣ Test HAProxy Endpoint
       # --------------------------------------------------
       - name: Test HAProxy Endpoint
         run: |
           echo "========================================"
-          echo "🚦 HAProxy URL (local runner):"
+          echo "🚦 HAProxy URL:"
           echo "http://localhost:9090"
           echo "========================================"
           sleep 5
-          curl -v http://localhost:9090/healthz || true
-          curl -v http://localhost:9090 || true
+          curl -v http://localhost:9090/healthz
+          curl -v http://localhost:9090
 
       # --------------------------------------------------
-      # 1️⃣2️⃣ Cleanup (always)
+      # 1️⃣3️⃣ Cleanup
       # --------------------------------------------------
       - name: Cleanup HAProxy
         if: always()
-        run: |
-          docker rm -f haproxy-ci || true
+        run: docker rm -f haproxy-ci || true
