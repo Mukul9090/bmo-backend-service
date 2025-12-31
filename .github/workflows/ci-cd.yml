@@ -1,104 +1,69 @@
-name: CI-CD Pipeline (Docker + Kubernetes)
+name: CI-CD Pipeline (Self-Hosted Runner + Visible URL)
 
 on:
   push:
-    branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
+    branches:
+      - main
 
 jobs:
   ci-cd:
-    runs-on: self-hosted   # uses your local GitHub runner
-    timeout-minutes: 20
+    runs-on:
+      - self-hosted
+      - macOS
+      - ARM64
 
     steps:
-      # -------------------------------
-      # Checkout
-      # -------------------------------
+      # 1️⃣ Checkout code
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # -------------------------------
-      # Docker Login
-      # -------------------------------
-      - name: Login to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
+      # 2️⃣ Login to Docker Hub (REQUIRED)
+      - name: Docker Hub Login
+        run: |
+          echo "${{ secrets.DOCKER_PASSWORD }}" | docker login \
+            -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
 
-      # -------------------------------
-      # Build & Push Image
-      # -------------------------------
-      - name: Build Docker image
+      # 3️⃣ Build Docker image locally
+      - name: Build Docker Image
         run: |
           docker build -t mukul1599/backend-service:latest .
 
-      - name: Push Docker image
+      # 4️⃣ Push image to Docker Hub
+      - name: Push Docker Image
         run: |
           docker push mukul1599/backend-service:latest
 
-      # -------------------------------
-      # Create Kubernetes Cluster (KIND)
-      # -------------------------------
-      - name: Create KIND cluster
+      # 5️⃣ Ensure Minikube is running
+      - name: Start Minikube
         run: |
-          kind create cluster --name ci-cluster || true
-          kubectl cluster-info
+          minikube status || minikube start --driver=docker
+          kubectl config use-context minikube
 
-      # -------------------------------
-      # Deploy to Kubernetes
-      # -------------------------------
-      - name: Apply Kubernetes manifests
+      # 6️⃣ Deploy to Kubernetes (Minikube)
+      - name: Deploy to Kubernetes
         run: |
           kubectl apply -f k8s/namespace.yaml
-          kubectl apply -f k8s/configmap.yaml
+          kubectl apply -f k8s/configmap-hot.yaml
           kubectl apply -f k8s/deployment.yaml
           kubectl apply -f k8s/service.yaml
 
-      # -------------------------------
-      # Debug: Show full cluster state
-      # -------------------------------
-      - name: Debug Kubernetes state
+      # 7️⃣ Wait for deployment (non-fatal)
+      - name: Wait for Pods
         run: |
-          echo "===== PODS ====="
-          kubectl get pods -n backend -o wide
+          kubectl rollout status deployment/backend-service \
+            -n backend --timeout=300s || true
 
-          echo "===== REPLICASETS ====="
-          kubectl get rs -n backend
-
-          echo "===== DEPLOYMENT ====="
-          kubectl describe deployment backend-service -n backend
-
-          echo "===== POD EVENTS ====="
-          for pod in $(kubectl get pods -n backend -o jsonpath='{.items[*].metadata.name}'); do
-            echo "---- $pod ----"
-            kubectl describe pod $pod -n backend
-          done
-
-          echo "===== ENDPOINTS ====="
-          kubectl get endpoints backend-service -n backend || true
-
-      # -------------------------------
-      # Rollout Status (non-fatal)
-      # -------------------------------
-      - name: Wait for rollout
+      # 8️⃣ Print Service URL (🔥 IMPORTANT 🔥)
+      - name: Show Application URL
         run: |
-          kubectl rollout status deployment/backend-service -n backend --timeout=180s || true
+          echo "========================================"
+          echo "🚀 Application URL:"
+          minikube service backend-service -n backend --url
+          echo "========================================"
 
-      # -------------------------------
-      # Cleanup stuck pods (CI safety)
-      # -------------------------------
-      - name: Cleanup stuck pods
+      # 9️⃣ Health Check (safe)
+      - name: Health Check
         run: |
-          kubectl get pods -n backend \
-            | grep -E 'ImagePullBackOff|ErrImagePull|Terminating' \
-            | awk '{print $1}' \
-            | xargs -r kubectl delete pod -n backend --force --grace-period=0
-
-      # -------------------------------
-      # Final Verification
-      # -------------------------------
-      - name: Final pod status
-        run: |
-          kubectl get pods -n backend
+          URL=$(minikube service backend-service -n backend --url)
+          echo "Checking $URL/healthz"
+          curl -v "$URL/healthz" || true
