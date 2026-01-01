@@ -197,8 +197,20 @@ jobs:
           kubectl port-forward svc/haproxy 9090:9090 > /tmp/pf-haproxy.log 2>&1 &
           HAPROXY_PF_PID=$!
           
-          # Wait for port-forwards to be ready
-          sleep 5
+          # Wait for port-forwards to be ready with health checks
+          echo "Waiting for port-forwards to be ready..."
+          for i in {1..30}; do
+            if curl -s --max-time 1 http://localhost:8080/healthz > /dev/null 2>&1 && \
+               curl -s --max-time 1 http://localhost:8081/healthz > /dev/null 2>&1 && \
+               curl -s --max-time 1 http://localhost:9090/healthz > /dev/null 2>&1; then
+              echo "✓ All port-forwards ready!"
+              break
+            fi
+            if [ $i -eq 30 ]; then
+              echo "⚠️  Port-forwards may not be fully ready, but proceeding with tests..."
+            fi
+            sleep 1
+          done
           
           # Set environment variables for test script
           export HOT_URL="http://localhost:8080"
