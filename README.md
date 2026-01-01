@@ -2,6 +2,7 @@
 
 A minimal Flask REST API for demonstrating hot/standby failover behavior.
 
+![CI](https://github.com/Mukul9090/bmo-backend-service/workflows/CI/badge.svg)
 ## Project Structure
 
 ```
@@ -132,3 +133,26 @@ To demonstrate failover behavior:
 3. Monitor both instances using their `/healthz` endpoints
 4. Simulate a failure by stopping the hot instance
 5. The standby instance can then be promoted to hot (by restarting with `CLUSTER_ROLE=hot`)
+
+## CI/CD
+
+This project uses GitHub Actions for continuous integration and deployment:
+
+- **CI**: Runs on every push/PR - tests, builds Docker image, and validates code
+- **CD**: Builds and pushes images to Docker Hub on pushes to `main`
+- **Deployment**: Automatically deploys to Kubernetes with hot/standby clusters and HAProxy
+
+See [docs/CI-CD.md](docs/CI-CD.md) for detailed CI/CD documentation.
+
+### Running Tests Locally
+
+```bash
+# Install test dependencies
+pip install -r requirements.txt
+
+# Run tests
+pytest
+
+# Run with coverage
+pytest --cov=server --cov-report=html
+```

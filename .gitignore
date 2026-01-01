@@ -44,4 +44,3 @@ kubeconfig
 
 # Port forward logs
 port-forward*.log
-
