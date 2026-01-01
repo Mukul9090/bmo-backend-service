@@ -90,27 +90,25 @@ jobs:
       # --------------------------------------------------
       # 9️⃣ Start HAProxy (STATIC BACKEND FOR CI)
       # --------------------------------------------------
-      - name: Start HAProxy
+      - name: Deploy HAProxy to Kubernetes
         run: |
-          docker rm -f haproxy-ci || true
-          docker run -d \
-            --name haproxy-ci \
-            -p 9090:9090 \
-            -v $PWD/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg \
-            haproxy:2.9
+          kubectl apply -f k8s/haproxy-config.yaml
+          kubectl apply -f k8s/haproxy-deployment.yaml
+          kubectl apply -f k8s/haproxy-service.yaml
 
-      # --------------------------------------------------
-      # 🔟 Test HAProxy
-      # --------------------------------------------------
-      - name: Test HAProxy Endpoint
+      - name: Wait for HAProxy
         run: |
-          echo "========================================"
-          echo "🚦 HAProxy URL:"
-          echo "http://localhost:9090"
-          echo "========================================"
-          sleep 5
-          curl -v http://localhost:9090/healthz || true
-          curl -v http://localhost:9090 || true
+          kubectl wait --for=condition=Ready pod \
+            -l app=haproxy \
+            -n backend \
+            --timeout=120s
+
+      - name: Test HAProxy
+        run: |
+          MINIKUBE_IP=$(minikube ip)
+          echo "HAProxy URL: http://$MINIKUBE_IP:30909"
+          curl http://$MINIKUBE_IP:30909/healthz
+
 
       # --------------------------------------------------
       # 1️⃣1️⃣ Cleanup
