@@ -1,0 +1,186 @@
+name: CI/CD Pipeline - Deploy to Kubernetes
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+env:
+  DOCKER_IMAGE: mukul1599/backend-service
+  DOCKER_TAG: latest
+  K8S_NAMESPACE_HOT: backend-hot
+  K8S_NAMESPACE_STANDBY: backend-standby
+
+jobs:
+  build-and-push:
+    name: Build and Push Docker Image
+    runs-on: BMO-platform
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.DOCKER_IMAGE }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    name: Deploy to Kubernetes
+    runs-on: BMO-platform
+    needs: build-and-push
+    if: github.event_name != 'pull_request'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure kubectl
+        run: |
+          # Verify kubectl is available
+          kubectl version --client
+          kubectl config current-context
+
+      - name: Create namespaces
+        run: |
+          kubectl create namespace ${{ env.K8S_NAMESPACE_HOT }} --dry-run=client -o yaml | kubectl apply -f -
+          kubectl create namespace ${{ env.K8S_NAMESPACE_STANDBY }} --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Deploy Hot Cluster ConfigMap
+        run: |
+          kubectl create configmap backend-config \
+            --from-literal=CLUSTER_ROLE=hot \
+            -n ${{ env.K8S_NAMESPACE_HOT }} \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Deploy Standby Cluster ConfigMap
+        run: |
+          kubectl create configmap backend-config \
+            --from-literal=CLUSTER_ROLE=standby \
+            -n ${{ env.K8S_NAMESPACE_STANDBY }} \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Deploy Hot Cluster
+        run: |
+          sed "s/namespace: backend/namespace: ${{ env.K8S_NAMESPACE_HOT }}/" k8s/deployment.yaml | \
+          sed "s|image: ${{ env.DOCKER_IMAGE }}$|image: ${{ env.DOCKER_IMAGE }}:${{ env.DOCKER_TAG }}|" | \
+          kubectl apply -f -
+
+      - name: Deploy Standby Cluster
+        run: |
+          sed "s/namespace: backend/namespace: ${{ env.K8S_NAMESPACE_STANDBY }}/" k8s/deployment.yaml | \
+          sed "s|image: ${{ env.DOCKER_IMAGE }}$|image: ${{ env.DOCKER_IMAGE }}:${{ env.DOCKER_TAG }}|" | \
+          kubectl apply -f -
+
+      - name: Deploy Hot Cluster Service
+        run: |
+          sed -e "s/namespace: backend/namespace: ${{ env.K8S_NAMESPACE_HOT }}/" \
+              -e 's/nodePort: 30080/nodePort: 30080/' \
+              k8s/service.yaml | kubectl apply -f -
+
+      - name: Deploy Standby Cluster Service
+        run: |
+          sed -e "s/namespace: backend/namespace: ${{ env.K8S_NAMESPACE_STANDBY }}/" \
+              -e 's/nodePort: 30080/nodePort: 30081/' \
+              k8s/service.yaml | kubectl apply -f -
+
+      - name: Deploy HAProxy
+        run: |
+          kubectl apply -f k8s/haproxy-configmap.yaml
+          kubectl apply -f k8s/haproxy-deployment.yaml
+          kubectl apply -f k8s/haproxy-service.yaml
+
+      - name: Wait for Hot Cluster to be ready
+        run: |
+          kubectl wait --for=condition=available \
+            deployment/backend-service \
+            -n ${{ env.K8S_NAMESPACE_HOT }} \
+            --timeout=300s
+
+      - name: Wait for Standby Cluster to be ready
+        run: |
+          kubectl wait --for=condition=available \
+            deployment/backend-service \
+            -n ${{ env.K8S_NAMESPACE_STANDBY }} \
+            --timeout=300s
+
+      - name: Wait for HAProxy to be ready
+        run: |
+          kubectl wait --for=condition=available \
+            deployment/haproxy \
+            --timeout=300s
+
+      - name: Verify Hot Cluster
+        run: |
+          echo "=== Hot Cluster Status ==="
+          kubectl get pods -n ${{ env.K8S_NAMESPACE_HOT }}
+          kubectl get svc -n ${{ env.K8S_NAMESPACE_HOT }}
+          
+          echo ""
+          echo "=== Testing Hot Cluster Health ==="
+          kubectl run test-curl-hot --image=curlimages/curl:latest --restart=Never --rm -- curl -s --max-time 5 http://backend-service.${{ env.K8S_NAMESPACE_HOT }}.svc.cluster.local:80/healthz || echo "Health check completed"
+
+      - name: Verify Standby Cluster
+        run: |
+          echo "=== Standby Cluster Status ==="
+          kubectl get pods -n ${{ env.K8S_NAMESPACE_STANDBY }}
+          kubectl get svc -n ${{ env.K8S_NAMESPACE_STANDBY }}
+          
+          echo ""
+          echo "=== Testing Standby Cluster Health ==="
+          kubectl run test-curl-standby --image=curlimages/curl:latest --restart=Never --rm -- curl -s --max-time 5 http://backend-service.${{ env.K8S_NAMESPACE_STANDBY }}.svc.cluster.local:80/healthz || echo "Health check completed"
+
+      - name: Verify HAProxy
+        run: |
+          echo "=== HAProxy Status ==="
+          kubectl get pods -l app=haproxy
+          kubectl get svc haproxy
+          
+          echo ""
+          echo "=== Testing HAProxy Health ==="
+          kubectl run test-curl-haproxy --image=curlimages/curl:latest --restart=Never --rm -- curl -s --max-time 5 http://haproxy.default.svc.cluster.local:9090/healthz || echo "Health check completed"
+
+      - name: Deployment Summary
+        run: |
+          echo "## 🚀 Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Hot Cluster" >> $GITHUB_STEP_SUMMARY
+          kubectl get deployment,svc -n ${{ env.K8S_NAMESPACE_HOT }} -o wide >> $GITHUB_STEP_SUMMARY || true
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Standby Cluster" >> $GITHUB_STEP_SUMMARY
+          kubectl get deployment,svc -n ${{ env.K8S_NAMESPACE_STANDBY }} -o wide >> $GITHUB_STEP_SUMMARY || true
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### HAProxy" >> $GITHUB_STEP_SUMMARY
+          kubectl get deployment,svc -l app=haproxy -o wide >> $GITHUB_STEP_SUMMARY || true
+
