@@ -33,12 +33,10 @@ jobs:
       # 3️⃣ Build & Push Image
       # --------------------------------------------------
       - name: Build Docker Image
-        run: |
-          docker build -t mukul1599/backend-service:latest .
+        run: docker build -t mukul1599/backend-service:latest .
 
       - name: Push Docker Image
-        run: |
-          docker push mukul1599/backend-service:latest
+        run: docker push mukul1599/backend-service:latest
 
       # --------------------------------------------------
       # 4️⃣ Start Minikube
@@ -49,18 +47,19 @@ jobs:
           kubectl config use-context minikube
 
       # --------------------------------------------------
-      # 5️⃣ Clean Old Resources (IMPORTANT)
+      # 5️⃣ Cleanup Old Resources (SAFE)
       # --------------------------------------------------
       - name: Cleanup old Kubernetes resources
         run: |
           kubectl delete deployment backend-service -n backend --ignore-not-found
-          kubectl delete pod -n backend -l app=backend-service \
-            --force --grace-period=0 || true
+          kubectl delete deployment haproxy -n backend --ignore-not-found
+          kubectl delete pod -n backend -l app=backend-service --force --grace-period=0 || true
+          kubectl delete pod -n backend -l app=haproxy --force --grace-period=0 || true
 
       # --------------------------------------------------
-      # 6️⃣ Deploy
+      # 6️⃣ Deploy Backend
       # --------------------------------------------------
-      - name: Deploy to Kubernetes
+      - name: Deploy Backend to Kubernetes
         run: |
           kubectl apply -f k8s/namespace.yaml
           kubectl apply -f k8s/configmap-hot.yaml
@@ -68,27 +67,25 @@ jobs:
           kubectl apply -f k8s/service.yaml
 
       # --------------------------------------------------
-      # 7️⃣ Wait for Pod READY (CRITICAL FIX)
+      # 7️⃣ Wait for Backend Ready
       # --------------------------------------------------
       - name: Wait for backend pod readiness
         run: |
-          echo "Waiting for pod to become Ready..."
           kubectl wait --for=condition=Ready pod \
             -l app=backend-service \
             -n backend \
-            --timeout=120s || true
+            --timeout=120s
 
       # --------------------------------------------------
-      # 8️⃣ Debug if Pod failed
+      # 8️⃣ Debug Backend
       # --------------------------------------------------
-      - name: Debug Pod State
+      - name: Debug Backend Pod
         run: |
           kubectl get pods -n backend -o wide
-          kubectl describe pod -n backend -l app=backend-service || true
           kubectl logs -n backend -l app=backend-service || true
 
       # --------------------------------------------------
-      # 9️⃣ Start HAProxy (STATIC BACKEND FOR CI)
+      # 9️⃣ Deploy HAProxy (KUBERNETES, NOT DOCKER)
       # --------------------------------------------------
       - name: Deploy HAProxy to Kubernetes
         run: |
@@ -96,23 +93,29 @@ jobs:
           kubectl apply -f k8s/haproxy-deployment.yaml
           kubectl apply -f k8s/haproxy-service.yaml
 
-      - name: Wait for HAProxy
+      # --------------------------------------------------
+      # 🔟 Wait for HAProxy Ready
+      # --------------------------------------------------
+      - name: Wait for HAProxy readiness
         run: |
           kubectl wait --for=condition=Ready pod \
             -l app=haproxy \
             -n backend \
             --timeout=120s
 
+      # --------------------------------------------------
+      # 1️⃣1️⃣ Test HAProxy
+      # --------------------------------------------------
       - name: Test HAProxy
         run: |
           MINIKUBE_IP=$(minikube ip)
           echo "HAProxy URL: http://$MINIKUBE_IP:30909"
-          curl http://$MINIKUBE_IP:30909/healthz
-
+          curl -v http://$MINIKUBE_IP:30909/healthz
 
       # --------------------------------------------------
-      # 1️⃣1️⃣ Cleanup
+      # 1️⃣2️⃣ Final Debug Snapshot
       # --------------------------------------------------
-      - name: Cleanup
+      - name: Final Cluster State
         if: always()
-        run: docker rm -f haproxy-ci || true
+        run: |
+          kubectl get all -n backend
