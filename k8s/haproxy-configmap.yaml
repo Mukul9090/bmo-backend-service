@@ -13,10 +13,11 @@ data:
       mode http
       option httplog
       option log-health-checks
-      timeout connect 5s
+      timeout connect 2s
       timeout client  30s
       timeout server  30s
-      timeout check   3s
+      timeout check   1s
+      timeout http-request 2s
 
     frontend http_front
       bind *:9090
@@ -26,9 +27,9 @@ data:
       option httpchk GET /healthz
       http-check expect status 200
       
-      # Hot cluster (primary) - active by default
-      server hot backend-service.backend-hot.svc.cluster.local:80 check inter 2s fall 3 rise 2
+      # Hot cluster (primary) - will automatically get traffic when healthy
+      server hot backend-service.backend-hot.svc.cluster.local:80 check inter 1s fall 2 rise 1 fastinter 500ms downinter 1s
       
-      # Standby cluster (backup) - activates when hot fails
-      server standby backend-service.backend-standby.svc.cluster.local:80 check inter 2s fall 3 rise 2 backup
+      # Standby cluster (backup) - only used when hot is down
+      server standby backend-service.backend-standby.svc.cluster.local:80 check inter 1s fall 2 rise 1 fastinter 500ms downinter 1s backup
 
