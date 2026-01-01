@@ -177,6 +177,47 @@ jobs:
           echo "=== Testing HAProxy Health ==="
           kubectl run test-curl-haproxy --image=curlimages/curl:latest --restart=Never --rm -- curl -s --max-time 5 http://haproxy.default.svc.cluster.local:9090/healthz || echo "Health check completed"
 
+      - name: Setup Python for Testing
+        run: |
+          python3 --version
+          pip3 install requests --quiet
+
+      - name: Run Deployment Tests
+        run: |
+          echo "=== Running Deployment Test Suite ==="
+          
+          # Port-forward services in background
+          kubectl port-forward -n ${{ env.K8S_NAMESPACE_HOT }} svc/backend-service 8080:80 > /tmp/pf-hot.log 2>&1 &
+          HOT_PF_PID=$!
+          
+          kubectl port-forward -n ${{ env.K8S_NAMESPACE_STANDBY }} svc/backend-service 8081:80 > /tmp/pf-standby.log 2>&1 &
+          STANDBY_PF_PID=$!
+          
+          kubectl port-forward svc/haproxy 9090:9090 > /tmp/pf-haproxy.log 2>&1 &
+          HAPROXY_PF_PID=$!
+          
+          # Wait for port-forwards to be ready
+          sleep 5
+          
+          # Set environment variables for test script
+          export HOT_URL="http://localhost:8080"
+          export STANDBY_URL="http://localhost:8081"
+          export HAPROXY_URL="http://localhost:9090"
+          
+          # Run test script
+          python3 test_deployment.py
+          TEST_EXIT_CODE=$?
+          
+          # Cleanup port-forwards
+          kill $HOT_PF_PID $STANDBY_PF_PID $HAPROXY_PF_PID 2>/dev/null || true
+          
+          if [ $TEST_EXIT_CODE -ne 0 ]; then
+            echo "❌ Deployment tests failed!"
+            exit 1
+          fi
+          
+          echo "✅ All deployment tests passed!"
+
       - name: Deployment Summary
         run: |
           echo "## 🚀 Deployment Summary" >> $GITHUB_STEP_SUMMARY
