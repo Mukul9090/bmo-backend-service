@@ -199,15 +199,39 @@ jobs:
           
           # Wait for port-forwards to be ready with health checks
           echo "Waiting for port-forwards to be ready..."
+          
+          # Function to check if port-forward is ready
+          check_port_forward() {
+            local url=$1
+            local name=$2
+            if curl -s --max-time 1 "$url" > /dev/null 2>&1; then
+              return 0
+            else
+              return 1
+            fi
+          }
+          
           for i in {1..30}; do
-            if curl -s --max-time 1 http://localhost:8080/healthz > /dev/null 2>&1 && \
-               curl -s --max-time 1 http://localhost:8081/healthz > /dev/null 2>&1 && \
-               curl -s --max-time 1 http://localhost:9090/healthz > /dev/null 2>&1; then
-              echo "✓ All port-forwards ready!"
+            HOT_READY=false
+            STANDBY_READY=false
+            HAPROXY_READY=false
+            
+            check_port_forward "http://localhost:8080/healthz" "Hot" && HOT_READY=true
+            check_port_forward "http://localhost:8081/healthz" "Standby" && STANDBY_READY=true
+            check_port_forward "http://localhost:9090/healthz" "HAProxy" && HAPROXY_READY=true
+            
+            if [ "$HOT_READY" = true ] && [ "$STANDBY_READY" = true ] && [ "$HAPROXY_READY" = true ]; then
+              echo "✓ All port-forwards ready! (attempt $i)"
               break
             fi
+            
+            if [ $i -eq 10 ] || [ $i -eq 20 ]; then
+              echo "  Status: Hot=$HOT_READY, Standby=$STANDBY_READY, HAProxy=$HAPROXY_READY (attempt $i/30)"
+            fi
+            
             if [ $i -eq 30 ]; then
               echo "⚠️  Port-forwards may not be fully ready, but proceeding with tests..."
+              echo "  Final status: Hot=$HOT_READY, Standby=$STANDBY_READY, HAProxy=$HAPROXY_READY"
             fi
             sleep 1
           done
