@@ -343,65 +343,103 @@ jobs:
           echo "### HAProxy" >> $GITHUB_STEP_SUMMARY
           kubectl get deployment,svc -l app=haproxy -o wide >> $GITHUB_STEP_SUMMARY || true
 
-      - name: Setup Port-Forward for Browser Access
+      - name: Setup Persistent Port-Forward Service
         run: |
-          echo "## 🌐 Browser Access Setup" >> $GITHUB_STEP_SUMMARY
+          echo "## 🔄 Persistent Port-Forward Service Setup" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
-          # Start port-forward in background
-          echo "Starting HAProxy port-forward in background..."
-          kubectl port-forward svc/haproxy 9090:9090 > /tmp/haproxy-port-forward.log 2>&1 &
-          PORT_FORWARD_PID=$!
-          echo "PORT_FORWARD_PID=$PORT_FORWARD_PID" >> $GITHUB_ENV
+          # Stop any existing port-forward processes
+          echo "Stopping any existing port-forward processes..."
+          pkill -f "kubectl port-forward.*haproxy" || true
+          pkill -f "keep-haproxy-forward" || true
+          sleep 2
           
-          # Wait for port-forward to be ready
-          sleep 3
+          # Create bin directory if it doesn't exist
+          mkdir -p ~/bin
+          
+          # Create restart script that auto-restarts port-forward
+          cat > ~/bin/keep-haproxy-forward.sh << 'EOF'
+          #!/bin/bash
+          LOG_FILE="/tmp/haproxy-portforward.log"
+          
+          echo "$(date): Starting persistent HAProxy port-forward service" >> "$LOG_FILE"
+          
+          while true; do
+            echo "$(date): Starting kubectl port-forward..." >> "$LOG_FILE"
+            kubectl port-forward svc/haproxy 9090:9090 2>&1 | tee -a "$LOG_FILE"
+            EXIT_CODE=$?
+            echo "$(date): Port-forward stopped with exit code $EXIT_CODE, restarting in 5 seconds..." >> "$LOG_FILE"
+            sleep 5
+          done
+          EOF
+          
+          chmod +x ~/bin/keep-haproxy-forward.sh
+          echo "✅ Created persistent port-forward script at ~/bin/keep-haproxy-forward.sh"
+          
+          # Start service in background with nohup
+          echo "Starting persistent port-forward service..."
+          nohup ~/bin/keep-haproxy-forward.sh > /dev/null 2>&1 &
+          SERVICE_PID=$!
+          
+          echo "SERVICE_PID=$SERVICE_PID" >> $GITHUB_ENV
+          
+          # Wait for service to start
+          echo "Waiting for port-forward to establish connection..."
+          sleep 5
           
           # Test if port-forward is working
-          if curl -s --max-time 2 http://localhost:9090/healthz > /dev/null 2>&1; then
-            echo "✅ Port-forward is active and working!" >> $GITHUB_STEP_SUMMARY
+          MAX_RETRIES=10
+          RETRY_COUNT=0
+          PORT_FORWARD_READY=false
+          
+          while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+            if curl -s --max-time 2 http://localhost:9090/healthz > /dev/null 2>&1; then
+              PORT_FORWARD_READY=true
+              break
+            fi
+            RETRY_COUNT=$((RETRY_COUNT + 1))
+            echo "Attempt $RETRY_COUNT/$MAX_RETRIES: Waiting for port-forward..."
+            sleep 2
+          done
+          
+          if [ "$PORT_FORWARD_READY" = true ]; then
+            echo "✅ Persistent port-forward service is active and working!" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "### Access URLs" >> $GITHUB_STEP_SUMMARY
             echo "- **HAProxy (Main Entry Point)**: http://localhost:9090" >> $GITHUB_STEP_SUMMARY
             echo "- **Health Check**: http://localhost:9090/healthz" >> $GITHUB_STEP_SUMMARY
             echo "- **API Endpoint**: http://localhost:9090/" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "### Port-Forward Status" >> $GITHUB_STEP_SUMMARY
-            echo "- **Process ID**: $PORT_FORWARD_PID" >> $GITHUB_STEP_SUMMARY
-            echo "- **Log File**: /tmp/haproxy-port-forward.log" >> $GITHUB_STEP_SUMMARY
+            echo "### Service Status" >> $GITHUB_STEP_SUMMARY
+            echo "- **Service PID**: $SERVICE_PID" >> $GITHUB_STEP_SUMMARY
+            echo "- **Script Location**: ~/bin/keep-haproxy-forward.sh" >> $GITHUB_STEP_SUMMARY
+            echo "- **Log File**: /tmp/haproxy-portforward.log" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "### Important Notes" >> $GITHUB_STEP_SUMMARY
-            echo "⚠️  **Note**: The port-forward started in this CI/CD run will stop when the workflow completes." >> $GITHUB_STEP_SUMMARY
+            echo "### Service Features" >> $GITHUB_STEP_SUMMARY
+            echo "- ✅ **Auto-restart**: Service automatically restarts if port-forward stops" >> $GITHUB_STEP_SUMMARY
+            echo "- ✅ **Persistent**: Runs in background and survives workflow completion" >> $GITHUB_STEP_SUMMARY
+            echo "- ✅ **Logging**: All output logged to /tmp/haproxy-portforward.log" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "To keep port-forward running after CI/CD, run this command manually on your runner machine:" >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
-            echo "kubectl port-forward svc/haproxy 9090:9090" >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "Or use minikube service:" >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
-            echo "minikube service haproxy" >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            echo "### Management Commands" >> $GITHUB_STEP_SUMMARY
+            echo "To stop service: \`pkill -f keep-haproxy-forward\`" >> $GITHUB_STEP_SUMMARY
+            echo "To view logs: \`tail -f /tmp/haproxy-portforward.log\`" >> $GITHUB_STEP_SUMMARY
+            echo "To restart service: Run this workflow again or manually: \`nohup ~/bin/keep-haproxy-forward.sh > /dev/null 2>&1 &\`" >> $GITHUB_STEP_SUMMARY
             
             echo ""
-            echo "✅ Port-forward started successfully!"
-            echo "   PID: $PORT_FORWARD_PID"
+            echo "✅ Persistent port-forward service started successfully!"
+            echo "   Service PID: $SERVICE_PID"
             echo "   Access: http://localhost:9090"
+            echo "   Logs: /tmp/haproxy-portforward.log"
             echo ""
-            echo "⚠️  Note: Port-forward will stop when workflow completes."
-            echo "   To keep it running, execute manually: kubectl port-forward svc/haproxy 9090:9090"
+            echo "ℹ️  Service will continue running after workflow completes"
+            echo "   It will auto-restart if port-forward stops"
           else
-            echo "⚠️  Port-forward started but not responding yet. Check logs: /tmp/haproxy-port-forward.log" >> $GITHUB_STEP_SUMMARY
-            echo "⚠️  Port-forward may need more time to establish connection"
-            cat /tmp/haproxy-port-forward.log || true
+            echo "⚠️  Port-forward service started but not responding yet" >> $GITHUB_STEP_SUMMARY
+            echo "   Check logs: /tmp/haproxy-portforward.log" >> $GITHUB_STEP_SUMMARY
+            echo "   Service PID: $SERVICE_PID" >> $GITHUB_STEP_SUMMARY
+            echo ""
+            echo "⚠️  Service may need more time to establish connection"
+            echo "   Check logs: tail -f /tmp/haproxy-portforward.log"
+            cat /tmp/haproxy-portforward.log 2>/dev/null | tail -20 || echo "Log file not created yet"
           fi
-          
-          # Keep port-forward running for a short time to allow immediate testing
-          echo "Port-forward will remain active for 30 seconds for immediate testing..."
-          sleep 30
-          
-          echo ""
-          echo "ℹ️  Port-forward is still running in background (PID: $PORT_FORWARD_PID)"
-          echo "   To stop it: kill $PORT_FORWARD_PID"
-          echo "   To keep it running after workflow: kubectl port-forward svc/haproxy 9090:9090"
 
