@@ -200,28 +200,97 @@ jobs:
           # Wait for port-forwards to be ready with health checks
           echo "Waiting for port-forwards to be ready..."
           
-          # Function to check if port-forward is ready
+          # Check curl availability and functionality
+          echo "Checking curl availability..."
+          CURL_AVAILABLE=false
+          if command -v curl > /dev/null 2>&1; then
+            echo "  curl found: $(which curl)"
+            if curl --version > /dev/null 2>&1; then
+              echo "  curl version check: OK"
+              # Test curl with a simple request
+              if curl -s --max-time 1 http://127.0.0.1:65535 > /dev/null 2>&1; then
+                echo "  curl basic test: OK (connection attempt works)"
+                CURL_AVAILABLE=true
+              else
+                echo "  curl basic test: Connection test completed (expected to fail on non-existent port)"
+                CURL_AVAILABLE=true
+              fi
+            else
+              echo "  curl version check: FAILED"
+            fi
+          else
+            echo "  curl not found in PATH"
+          fi
+          
+          # Function to check if port-forward is ready using curl or Python
           check_port_forward() {
             local url=$1
             local name=$2
-            if curl -s --max-time 1 "$url" > /dev/null 2>&1; then
-              return 0
+            
+            # #region agent log
+            echo "DEBUG: Checking $name at $url (curl_available=$CURL_AVAILABLE)" >> /Users/mukul/Desktop/untitled\ folder/BMO/.cursor/debug.log 2>&1 || true
+            # #endregion
+            
+            if [ "$CURL_AVAILABLE" = true ]; then
+              # #region agent log
+              echo "DEBUG: Using curl for $name" >> /Users/mukul/Desktop/untitled\ folder/BMO/.cursor/debug.log 2>&1 || true
+              # #endregion
+              if curl -s --max-time 1 "$url" > /dev/null 2>&1; then
+                # #region agent log
+                echo "DEBUG: curl success for $name" >> /Users/mukul/Desktop/untitled\ folder/BMO/.cursor/debug.log 2>&1 || true
+                # #endregion
+                return 0
+              else
+                # #region agent log
+                echo "DEBUG: curl failed for $name, exit_code=$?" >> /Users/mukul/Desktop/untitled\ folder/BMO/.cursor/debug.log 2>&1 || true
+                # #endregion
+                return 1
+              fi
             else
-              return 1
+              # #region agent log
+              echo "DEBUG: Using Python fallback for $name" >> /Users/mukul/Desktop/untitled\ folder/BMO/.cursor/debug.log 2>&1 || true
+              # #endregion
+              # Use Python as fallback
+              if python3 -c "import urllib.request; urllib.request.urlopen('$url', timeout=1).read()" > /dev/null 2>&1; then
+                # #region agent log
+                echo "DEBUG: Python success for $name" >> /Users/mukul/Desktop/untitled\ folder/BMO/.cursor/debug.log 2>&1 || true
+                # #endregion
+                return 0
+              else
+                # #region agent log
+                echo "DEBUG: Python failed for $name" >> /Users/mukul/Desktop/untitled\ folder/BMO/.cursor/debug.log 2>&1 || true
+                # #endregion
+                return 1
+              fi
             fi
           }
+          
+          # #region agent log
+          echo "DEBUG: Starting port-forward readiness check loop" >> /Users/mukul/Desktop/untitled\ folder/BMO/.cursor/debug.log 2>&1 || true
+          # #endregion
           
           for i in {1..30}; do
             HOT_READY=false
             STANDBY_READY=false
             HAPROXY_READY=false
             
+            # #region agent log
+            echo "DEBUG: Attempt $i - checking port-forwards" >> /Users/mukul/Desktop/untitled\ folder/BMO/.cursor/debug.log 2>&1 || true
+            # #endregion
+            
             check_port_forward "http://localhost:8080/healthz" "Hot" && HOT_READY=true
             check_port_forward "http://localhost:8081/healthz" "Standby" && STANDBY_READY=true
             check_port_forward "http://localhost:9090/healthz" "HAProxy" && HAPROXY_READY=true
             
+            # #region agent log
+            echo "DEBUG: Attempt $i results - Hot=$HOT_READY, Standby=$STANDBY_READY, HAProxy=$HAPROXY_READY" >> /Users/mukul/Desktop/untitled\ folder/BMO/.cursor/debug.log 2>&1 || true
+            # #endregion
+            
             if [ "$HOT_READY" = true ] && [ "$STANDBY_READY" = true ] && [ "$HAPROXY_READY" = true ]; then
               echo "✓ All port-forwards ready! (attempt $i)"
+              # #region agent log
+              echo "DEBUG: All port-forwards ready at attempt $i" >> /Users/mukul/Desktop/untitled\ folder/BMO/.cursor/debug.log 2>&1 || true
+              # #endregion
               break
             fi
             
@@ -232,6 +301,9 @@ jobs:
             if [ $i -eq 30 ]; then
               echo "⚠️  Port-forwards may not be fully ready, but proceeding with tests..."
               echo "  Final status: Hot=$HOT_READY, Standby=$STANDBY_READY, HAProxy=$HAPROXY_READY"
+              # #region agent log
+              echo "DEBUG: Reached max attempts, final status - Hot=$HOT_READY, Standby=$STANDBY_READY, HAProxy=$HAPROXY_READY" >> /Users/mukul/Desktop/untitled\ folder/BMO/.cursor/debug.log 2>&1 || true
+              # #endregion
             fi
             sleep 1
           done
