@@ -20,7 +20,10 @@ env:
 jobs:
   build-and-push:
     name: Build and Push Docker Image
-    runs-on: BMO-platform
+    runs-on:
+      - self-hosted
+      - macOS
+      - ARM64
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -59,7 +62,10 @@ jobs:
 
   deploy:
     name: Deploy to Kubernetes
-    runs-on: BMO-platform
+    runs-on:
+      - self-hosted
+      - macOS
+      - ARM64
     needs: build-and-push
     if: github.event_name != 'pull_request'
     steps:
