@@ -387,27 +387,29 @@ jobs:
           echo "### Monitoring Stack" >> $GITHUB_STEP_SUMMARY
           kubectl get deployment,svc -n monitoring -o wide >> $GITHUB_STEP_SUMMARY || true
 
-      - name: Setup Persistent Port-Forward Service
+      - name: Setup Persistent Port-Forward Services
         run: |
-          echo "## 🔄 Persistent Port-Forward Service Setup" >> $GITHUB_STEP_SUMMARY
+          echo "## 🔄 Persistent Port-Forward Services Setup" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
           # Stop any existing port-forward processes
           echo "Stopping any existing port-forward processes..."
           pkill -f "kubectl port-forward.*haproxy" || true
+          pkill -f "kubectl port-forward.*prometheus" || true
+          pkill -f "kubectl port-forward.*grafana" || true
           pkill -f "keep-haproxy-forward" || true
+          pkill -f "keep-prometheus-forward" || true
+          pkill -f "keep-grafana-forward" || true
           sleep 2
           
           # Create bin directory if it doesn't exist
           mkdir -p ~/bin
           
-          # Create restart script that auto-restarts port-forward
+          # Create HAProxy restart script
           cat > ~/bin/keep-haproxy-forward.sh << 'EOF'
           #!/bin/bash
           LOG_FILE="/tmp/haproxy-portforward.log"
-          
           echo "$(date): Starting persistent HAProxy port-forward service" >> "$LOG_FILE"
-          
           while true; do
             echo "$(date): Starting kubectl port-forward..." >> "$LOG_FILE"
             kubectl port-forward svc/haproxy 9090:9090 2>&1 | tee -a "$LOG_FILE"
@@ -417,73 +419,119 @@ jobs:
           done
           EOF
           
+          # Create Prometheus restart script
+          cat > ~/bin/keep-prometheus-forward.sh << 'EOF'
+          #!/bin/bash
+          LOG_FILE="/tmp/prometheus-portforward.log"
+          echo "$(date): Starting persistent Prometheus port-forward service" >> "$LOG_FILE"
+          while true; do
+            echo "$(date): Starting kubectl port-forward..." >> "$LOG_FILE"
+            kubectl port-forward -n monitoring svc/prometheus 9091:9090 2>&1 | tee -a "$LOG_FILE"
+            EXIT_CODE=$?
+            echo "$(date): Port-forward stopped with exit code $EXIT_CODE, restarting in 5 seconds..." >> "$LOG_FILE"
+            sleep 5
+          done
+          EOF
+          
+          # Create Grafana restart script
+          cat > ~/bin/keep-grafana-forward.sh << 'EOF'
+          #!/bin/bash
+          LOG_FILE="/tmp/grafana-portforward.log"
+          echo "$(date): Starting persistent Grafana port-forward service" >> "$LOG_FILE"
+          while true; do
+            echo "$(date): Starting kubectl port-forward..." >> "$LOG_FILE"
+            kubectl port-forward -n monitoring svc/grafana 3030:3000 2>&1 | tee -a "$LOG_FILE"
+            EXIT_CODE=$?
+            echo "$(date): Port-forward stopped with exit code $EXIT_CODE, restarting in 5 seconds..." >> "$LOG_FILE"
+            sleep 5
+          done
+          EOF
+          
           chmod +x ~/bin/keep-haproxy-forward.sh
-          echo "✅ Created persistent port-forward script at ~/bin/keep-haproxy-forward.sh"
+          chmod +x ~/bin/keep-prometheus-forward.sh
+          chmod +x ~/bin/keep-grafana-forward.sh
           
-          # Start service in background with nohup
-          echo "Starting persistent port-forward service..."
+          echo "✅ Created persistent port-forward scripts"
+          
+          # Start all services in background with nohup
+          echo "Starting persistent port-forward services..."
           nohup ~/bin/keep-haproxy-forward.sh > /dev/null 2>&1 &
-          SERVICE_PID=$!
+          HAPROXY_PID=$!
+          nohup ~/bin/keep-prometheus-forward.sh > /dev/null 2>&1 &
+          PROMETHEUS_PID=$!
+          nohup ~/bin/keep-grafana-forward.sh > /dev/null 2>&1 &
+          GRAFANA_PID=$!
           
-          echo "SERVICE_PID=$SERVICE_PID" >> $GITHUB_ENV
+          echo "HAPROXY_PID=$HAPROXY_PID" >> $GITHUB_ENV
+          echo "PROMETHEUS_PID=$PROMETHEUS_PID" >> $GITHUB_ENV
+          echo "GRAFANA_PID=$GRAFANA_PID" >> $GITHUB_ENV
           
-          # Wait for service to start
-          echo "Waiting for port-forward to establish connection..."
+          # Wait for services to start
+          echo "Waiting for port-forwards to establish connections..."
           sleep 5
           
-          # Test if port-forward is working
+          # Test if port-forwards are working
           MAX_RETRIES=10
           RETRY_COUNT=0
-          PORT_FORWARD_READY=false
+          HAPROXY_READY=false
+          PROMETHEUS_READY=false
+          GRAFANA_READY=false
           
           while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-            if curl -s --max-time 2 http://localhost:9090/healthz > /dev/null 2>&1; then
-              PORT_FORWARD_READY=true
+            curl -s --max-time 2 http://localhost:9090/healthz > /dev/null 2>&1 && HAPROXY_READY=true || true
+            curl -s --max-time 2 http://localhost:9091/-/healthy > /dev/null 2>&1 && PROMETHEUS_READY=true || true
+            curl -s --max-time 2 http://localhost:3030/api/health > /dev/null 2>&1 && GRAFANA_READY=true || true
+            
+            if [ "$HAPROXY_READY" = true ] && [ "$PROMETHEUS_READY" = true ] && [ "$GRAFANA_READY" = true ]; then
               break
             fi
             RETRY_COUNT=$((RETRY_COUNT + 1))
-            echo "Attempt $RETRY_COUNT/$MAX_RETRIES: Waiting for port-forward..."
+            echo "Attempt $RETRY_COUNT/$MAX_RETRIES: Waiting for port-forwards..."
             sleep 2
           done
           
-          if [ "$PORT_FORWARD_READY" = true ]; then
-            echo "✅ Persistent port-forward service is active and working!" >> $GITHUB_STEP_SUMMARY
+          if [ "$HAPROXY_READY" = true ] && [ "$PROMETHEUS_READY" = true ] && [ "$GRAFANA_READY" = true ]; then
+            echo "✅ All persistent port-forward services are active and working!" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "### Access URLs" >> $GITHUB_STEP_SUMMARY
             echo "- **HAProxy (Main Entry Point)**: http://localhost:9090" >> $GITHUB_STEP_SUMMARY
-            echo "- **Health Check**: http://localhost:9090/healthz" >> $GITHUB_STEP_SUMMARY
-            echo "- **API Endpoint**: http://localhost:9090/" >> $GITHUB_STEP_SUMMARY
+            echo "- **Prometheus**: http://localhost:9091" >> $GITHUB_STEP_SUMMARY
+            echo "- **Grafana**: http://localhost:3030" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "### Service Status" >> $GITHUB_STEP_SUMMARY
-            echo "- **Service PID**: $SERVICE_PID" >> $GITHUB_STEP_SUMMARY
-            echo "- **Script Location**: ~/bin/keep-haproxy-forward.sh" >> $GITHUB_STEP_SUMMARY
-            echo "- **Log File**: /tmp/haproxy-portforward.log" >> $GITHUB_STEP_SUMMARY
+            echo "- **HAProxy PID**: $HAPROXY_PID" >> $GITHUB_STEP_SUMMARY
+            echo "- **Prometheus PID**: $PROMETHEUS_PID" >> $GITHUB_STEP_SUMMARY
+            echo "- **Grafana PID**: $GRAFANA_PID" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### Log Files" >> $GITHUB_STEP_SUMMARY
+            echo "- **HAProxy**: /tmp/haproxy-portforward.log" >> $GITHUB_STEP_SUMMARY
+            echo "- **Prometheus**: /tmp/prometheus-portforward.log" >> $GITHUB_STEP_SUMMARY
+            echo "- **Grafana**: /tmp/grafana-portforward.log" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "### Service Features" >> $GITHUB_STEP_SUMMARY
-            echo "- ✅ **Auto-restart**: Service automatically restarts if port-forward stops" >> $GITHUB_STEP_SUMMARY
-            echo "- ✅ **Persistent**: Runs in background and survives workflow completion" >> $GITHUB_STEP_SUMMARY
-            echo "- ✅ **Logging**: All output logged to /tmp/haproxy-portforward.log" >> $GITHUB_STEP_SUMMARY
+            echo "- ✅ **Auto-restart**: Services automatically restart if port-forwards stop" >> $GITHUB_STEP_SUMMARY
+            echo "- ✅ **Persistent**: Run in background and survive workflow completion" >> $GITHUB_STEP_SUMMARY
+            echo "- ✅ **Logging**: All output logged to respective log files" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "### Management Commands" >> $GITHUB_STEP_SUMMARY
-            echo "To stop service: \`pkill -f keep-haproxy-forward\`" >> $GITHUB_STEP_SUMMARY
-            echo "To view logs: \`tail -f /tmp/haproxy-portforward.log\`" >> $GITHUB_STEP_SUMMARY
-            echo "To restart service: Run this workflow again or manually: \`nohup ~/bin/keep-haproxy-forward.sh > /dev/null 2>&1 &\`" >> $GITHUB_STEP_SUMMARY
+            echo "To stop all services: \`pkill -f keep-.*-forward\`" >> $GITHUB_STEP_SUMMARY
+            echo "To view logs: \`tail -f /tmp/*-portforward.log\`" >> $GITHUB_STEP_SUMMARY
+            echo "To restart services: Run this workflow again" >> $GITHUB_STEP_SUMMARY
             
             echo ""
-            echo "✅ Persistent port-forward service started successfully!"
-            echo "   Service PID: $SERVICE_PID"
-            echo "   Access: http://localhost:9090"
-            echo "   Logs: /tmp/haproxy-portforward.log"
+            echo "✅ All persistent port-forward services started successfully!"
+            echo "   HAProxy: http://localhost:9090 (PID: $HAPROXY_PID)"
+            echo "   Prometheus: http://localhost:9091 (PID: $PROMETHEUS_PID)"
+            echo "   Grafana: http://localhost:3030 (PID: $GRAFANA_PID)"
             echo ""
-            echo "ℹ️  Service will continue running after workflow completes"
-            echo "   It will auto-restart if port-forward stops"
+            echo "ℹ️  Services will continue running after workflow completes"
+            echo "   They will auto-restart if port-forwards stop"
           else
-            echo "⚠️  Port-forward service started but not responding yet" >> $GITHUB_STEP_SUMMARY
-            echo "   Check logs: /tmp/haproxy-portforward.log" >> $GITHUB_STEP_SUMMARY
-            echo "   Service PID: $SERVICE_PID" >> $GITHUB_STEP_SUMMARY
+            echo "⚠️  Some port-forward services may not be responding yet" >> $GITHUB_STEP_SUMMARY
+            echo "   HAProxy: $HAPROXY_READY | Prometheus: $PROMETHEUS_READY | Grafana: $GRAFANA_READY" >> $GITHUB_STEP_SUMMARY
+            echo "   Check logs: /tmp/*-portforward.log" >> $GITHUB_STEP_SUMMARY
             echo ""
-            echo "⚠️  Service may need more time to establish connection"
-            echo "   Check logs: tail -f /tmp/haproxy-portforward.log"
-            cat /tmp/haproxy-portforward.log 2>/dev/null | tail -20 || echo "Log file not created yet"
+            echo "⚠️  Services may need more time to establish connections"
+            echo "   Check logs: tail -f /tmp/*-portforward.log"
           fi
 
