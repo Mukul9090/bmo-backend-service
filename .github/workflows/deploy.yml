@@ -83,6 +83,30 @@ jobs:
         run: |
           kubectl create namespace ${{ env.K8S_NAMESPACE_HOT }} --dry-run=client -o yaml | kubectl apply -f -
           kubectl create namespace ${{ env.K8S_NAMESPACE_STANDBY }} --dry-run=client -o yaml | kubectl apply -f -
+          kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Deploy Prometheus ServiceAccount
+        run: |
+          kubectl apply -f monitoring/prometheus/serviceaccount.yaml
+
+      - name: Deploy Prometheus ConfigMap
+        run: |
+          kubectl apply -f monitoring/prometheus/configmap.yaml
+
+      - name: Deploy Prometheus
+        run: |
+          kubectl apply -f monitoring/prometheus/deployment.yaml
+          kubectl apply -f monitoring/prometheus/service.yaml
+
+      - name: Deploy Grafana ConfigMaps
+        run: |
+          kubectl apply -f monitoring/grafana/configmap-datasources.yaml
+          kubectl apply -f monitoring/grafana/configmap-dashboards.yaml
+
+      - name: Deploy Grafana
+        run: |
+          kubectl apply -f monitoring/grafana/deployment.yaml
+          kubectl apply -f monitoring/grafana/service.yaml
 
       - name: Deploy Hot Cluster ConfigMap
         run: |
@@ -148,6 +172,20 @@ jobs:
         run: |
           kubectl wait --for=condition=available \
             deployment/haproxy \
+            --timeout=300s
+
+      - name: Wait for Prometheus to be ready
+        run: |
+          kubectl wait --for=condition=available \
+            deployment/prometheus \
+            -n monitoring \
+            --timeout=300s
+
+      - name: Wait for Grafana to be ready
+        run: |
+          kubectl wait --for=condition=available \
+            deployment/grafana \
+            -n monitoring \
             --timeout=300s
 
       - name: Verify Hot Cluster
@@ -345,6 +383,9 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### HAProxy" >> $GITHUB_STEP_SUMMARY
           kubectl get deployment,svc -l app=haproxy -o wide >> $GITHUB_STEP_SUMMARY || true
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Monitoring Stack" >> $GITHUB_STEP_SUMMARY
+          kubectl get deployment,svc -n monitoring -o wide >> $GITHUB_STEP_SUMMARY || true
 
       - name: Setup Persistent Port-Forward Service
         run: |
