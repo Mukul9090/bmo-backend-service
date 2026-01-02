@@ -319,9 +319,9 @@ jobs:
           # Add user site-packages to PYTHONPATH if needed
           export PYTHONPATH="${HOME}/Library/Python/3.14/lib/python/site-packages:${PYTHONPATH:-}"
           
-          # Run test script
-          python3 test_deployment.py
-          TEST_EXIT_CODE=$?
+# Run test script
+python3 tests/test_deployment.py
+TEST_EXIT_CODE=$?
           
           # Cleanup port-forwards
           kill $HOT_PF_PID $STANDBY_PF_PID $HAPROXY_PF_PID 2>/dev/null || true
