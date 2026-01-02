@@ -1,84 +1,74 @@
 # Docker Hub Setup Guide
 
-This guide explains how to set up Docker Hub integration for GitHub Actions.
+Guide for setting up Docker Hub integration with GitHub Actions.
 
-## Step 1: Create Docker Hub Account (if needed)
+## Step 1: Create Docker Hub Account
 
 1. Go to https://hub.docker.com/
-2. Sign up or log in with your account
+2. Sign up or log in
 
-## Step 2: Create Docker Hub Access Token
+## Step 2: Create Access Token
 
 1. Log in to Docker Hub
-2. Go to: **Account Settings** → **Security** → **New Access Token**
-3. Give it a name: `github-actions` (or any name you prefer)
-4. Set permissions: **Read & Write** (or **Read, Write & Delete**)
+2. Navigate to **Account Settings** → **Security** → **New Access Token**
+3. Name: `github-actions`
+4. Permissions: **Read & Write**
 5. Click **Generate**
-6. **Copy the token immediately** - you won't be able to see it again!
+6. **Copy the token immediately** - it won't be shown again
 
-## Step 3: Create Repository on Docker Hub
+## Step 3: Create Repository
 
-1. Go to: https://hub.docker.com/repositories
+1. Go to https://hub.docker.com/repositories
 2. Click **Create Repository**
-3. Repository name: `bmo-backend-service`
-4. Visibility: **Public** (or Private if you prefer)
+3. Repository name: `backend-service` (or your preferred name)
+4. Visibility: **Public** or **Private**
 5. Click **Create**
-
-Your image will be available at: `mukul9090/bmo-backend-service`
 
 ## Step 4: Add Token to GitHub Secrets
 
-1. Go to your GitHub repository: https://github.com/Mukul9090/bmo-backend-service
-2. Navigate to: **Settings** → **Secrets and variables** → **Actions**
+1. Go to your GitHub repository
+2. Navigate to **Settings** → **Secrets and variables** → **Actions**
 3. Click **New repository secret**
-4. Name: `DOCKERHUB_TOKEN`
-5. Value: (paste your Docker Hub access token)
-6. Click **Add secret**
+4. Add secrets:
+   - Name: `DOCKER_USERNAME` - Your Docker Hub username
+   - Name: `DOCKER_PASSWORD` - Your Docker Hub access token
 
-## Step 5: Verify Setup
+## Step 5: Update Workflow
 
-After pushing to GitHub, the CD workflow will:
-1. Build the Docker image
-2. Push to Docker Hub: `mukul9090/bmo-backend-service:latest`
-3. Push to GitHub Container Registry: `ghcr.io/Mukul9090/bmo-backend-service:latest`
+Ensure your GitHub Actions workflow uses these secrets:
+
+```yaml
+- name: Login to Docker Hub
+  uses: docker/login-action@v2
+  with:
+    username: ${{ secrets.DOCKER_USERNAME }}
+    password: ${{ secrets.DOCKER_PASSWORD }}
+```
 
 ## Using the Image
 
-Once pushed, you can pull and use the image:
+Once pushed, pull and use the image:
 
 ```bash
-# Pull from Docker Hub
-docker pull mukul9090/bmo-backend-service:latest
+# Pull image
+docker pull <username>/backend-service:latest
 
 # Run locally
-docker run -p 8080:8080 -e CLUSTER_ROLE=hot mukul9090/bmo-backend-service:latest
-
-# Use in Kubernetes
-# Update k8s/deployment.yaml to use:
-# image: mukul9090/bmo-backend-service:latest
+docker run -p 8080:8080 -e CLUSTER_ROLE=hot <username>/backend-service:latest
 ```
-
-## Image Tags
-
-The workflow automatically creates these tags:
-- `latest` - Latest build from main branch
-- `main` - Latest build from main branch
-- `main-<sha>` - Specific commit SHA
-- `v1.0.0` - Version tags (when creating releases)
 
 ## Troubleshooting
 
-### Error: "unauthorized: authentication required"
-- Check that `DOCKERHUB_TOKEN` secret is set correctly
-- Verify the token has write permissions
-- Make sure the repository name matches: `bmo-backend-service`
+### "unauthorized: authentication required"
+- Verify `DOCKER_USERNAME` and `DOCKER_PASSWORD` secrets are set correctly
+- Ensure token has write permissions
+- Check repository name matches in workflow
 
-### Error: "repository does not exist"
+### "repository does not exist"
 - Create the repository on Docker Hub first
-- Verify the repository name matches in the workflow
+- Verify repository name matches in workflow
 
-### Image not appearing on Docker Hub
+### Image not appearing
 - Check GitHub Actions logs for errors
-- Verify the workflow completed successfully
 - Wait a few minutes for Docker Hub to update
-
+- Verify workflow completed successfully

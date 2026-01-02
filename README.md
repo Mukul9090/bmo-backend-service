@@ -1,8 +1,9 @@
 # Backend Service - High Availability Demo
 
-A minimal Flask REST API for demonstrating hot/standby failover behavior.
+A minimal Flask REST API demonstrating hot/standby failover behavior with Kubernetes and HAProxy.
 
 ![CI](https://github.com/Mukul9090/bmo-backend-service/workflows/CI/badge.svg)
+
 ## Project Structure
 
 ```
@@ -10,110 +11,50 @@ A minimal Flask REST API for demonstrating hot/standby failover behavior.
 ├── server.py              # Main Flask application
 ├── requirements.txt       # Python dependencies
 ├── Dockerfile             # Container image definition
-├── .dockerignore          # Docker ignore patterns
-├── .gitignore            # Git ignore patterns
-├── k8s/                  # Kubernetes manifests
+├── k8s/                   # Kubernetes manifests
 │   ├── namespace.yaml
-│   ├── configmap.yaml
+│   ├── configmap-hot.yaml
+│   ├── configmap-standby.yaml
 │   ├── deployment.yaml
-│   └── service.yaml
-└── docs/                 # Documentation
-    └── DEPLOY.md         # Kubernetes deployment guide
+│   ├── service.yaml
+│   └── haproxy-*.yaml     # HAProxy load balancer
+├── monitoring/            # Prometheus & Grafana
+└── docs/                  # Documentation
 ```
 
-## Running Locally with Python
+## Quick Start
 
-### Prerequisites
-- Python 3.11 or higher
-- pip
+### Local Development
 
-### Setup
-
-1. Install dependencies:
 ```bash
+# Install dependencies
 pip install -r requirements.txt
-```
 
-2. Run the application:
-
-**Hot (Primary) Instance:**
-```bash
+# Run hot instance
 CLUSTER_ROLE=hot python server.py
-```
 
-**Standby Instance:**
-```bash
+# Run standby instance (in another terminal)
 CLUSTER_ROLE=standby python server.py
 ```
 
-**Default (Unknown Role):**
+Access at `http://localhost:8080`
+
+### Docker
+
 ```bash
-python server.py
-```
-
-The application will be available at `http://localhost:8080`
-
-### Testing Endpoints
-
-**Health Check:**
-```bash
-curl http://localhost:8080/healthz
-```
-
-**Root Endpoint:**
-```bash
-curl http://localhost:8080/
-```
-
-## Running with Docker
-
-### Build the image:
-```bash
+# Build image
 docker build -t backend-service .
-```
 
-### Run containers:
-
-**Hot (Primary) Instance:**
-```bash
+# Run hot instance
 docker run -p 8080:8080 -e CLUSTER_ROLE=hot backend-service
-```
 
-**Standby Instance:**
-```bash
+# Run standby instance
 docker run -p 8081:8080 -e CLUSTER_ROLE=standby backend-service
 ```
 
-Note: The standby instance uses port 8081 to avoid port conflicts when running both instances on the same machine.
+### Kubernetes
 
-### Testing Docker Containers
-
-**Hot Instance:**
 ```bash
-curl http://localhost:8080/healthz
-curl http://localhost:8080/
-```
-
-**Standby Instance:**
-```bash
-curl http://localhost:8081/healthz
-curl http://localhost:8081/
-```
-
-## Kubernetes Deployment
-
-### Minikube (Local Development)
-For step-by-step Minikube deployment guide, see [docs/MINIKUBE.md](docs/MINIKUBE.md).
-
-**Quick start:**
-```bash
-# Start Minikube
-minikube start --driver=docker
-
-# Build image in Minikube context
-eval $(minikube docker-env)
-docker build -t backend-service:latest .
-
 # Deploy to Kubernetes
 kubectl apply -f k8s/
 
@@ -121,38 +62,41 @@ kubectl apply -f k8s/
 kubectl port-forward -n backend svc/backend-service 8080:80
 ```
 
-### Other Kubernetes Clusters
-For general Kubernetes deployment instructions, see [docs/DEPLOY.md](docs/DEPLOY.md).
+For detailed deployment guides, see [docs/](docs/).
 
-## Simulating Failover
+## API Endpoints
 
-To demonstrate failover behavior:
+- `GET /healthz` - Health check endpoint
+- `GET /` - Root endpoint with service info
 
-1. Start the hot instance on port 8080
-2. Start the standby instance on port 8081
-3. Monitor both instances using their `/healthz` endpoints
-4. Simulate a failure by stopping the hot instance
-5. The standby instance can then be promoted to hot (by restarting with `CLUSTER_ROLE=hot`)
-
-## CI/CD
-
-This project uses GitHub Actions for continuous integration and deployment:
-
-- **CI**: Runs on every push/PR - tests, builds Docker image, and validates code
-- **CD**: Builds and pushes images to Docker Hub on pushes to `main`
-- **Deployment**: Automatically deploys to Kubernetes with hot/standby clusters and HAProxy
-
-See [docs/CI-CD.md](docs/CI-CD.md) for detailed CI/CD documentation.
-
-### Running Tests Locally
+## Testing
 
 ```bash
-# Install test dependencies
-pip install -r requirements.txt
-
 # Run tests
 pytest
 
 # Run with coverage
 pytest --cov=server --cov-report=html
 ```
+
+## Documentation
+
+- [Deployment Guide](docs/DEPLOY.md) - General Kubernetes deployment
+- [Minikube Guide](docs/MINIKUBE.md) - Local development with Minikube
+- [CI/CD Pipeline](docs/CI-CD.md) - GitHub Actions setup
+- [Docker Hub Setup](docs/DOCKERHUB-SETUP.md) - Container registry configuration
+
+## Architecture
+
+- **Hot Cluster**: Primary active cluster handling traffic
+- **Standby Cluster**: Backup cluster ready for failover
+- **HAProxy**: Load balancer with automatic failover
+- **Monitoring**: Prometheus metrics and Grafana dashboards
+
+## CI/CD
+
+Automated CI/CD pipeline using GitHub Actions:
+- **CI**: Tests and builds on every push/PR
+- **CD**: Deploys to Kubernetes with hot/standby configuration
+
+See [docs/CI-CD.md](docs/CI-CD.md) for details.

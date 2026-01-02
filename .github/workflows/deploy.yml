@@ -16,6 +16,7 @@ env:
   DOCKER_TAG: latest
   K8S_NAMESPACE_HOT: backend-hot
   K8S_NAMESPACE_STANDBY: backend-standby
+  REPLICAS: 2
 
 jobs:
   build-and-push:
@@ -101,12 +102,14 @@ jobs:
         run: |
           sed "s/namespace: backend/namespace: ${{ env.K8S_NAMESPACE_HOT }}/" k8s/deployment.yaml | \
           sed "s|image: ${{ env.DOCKER_IMAGE }}$|image: ${{ env.DOCKER_IMAGE }}:${{ env.DOCKER_TAG }}|" | \
+          sed "s/replicas: [0-9]*/replicas: ${{ env.REPLICAS }}/" | \
           kubectl apply -f -
 
       - name: Deploy Standby Cluster
         run: |
           sed "s/namespace: backend/namespace: ${{ env.K8S_NAMESPACE_STANDBY }}/" k8s/deployment.yaml | \
           sed "s|image: ${{ env.DOCKER_IMAGE }}$|image: ${{ env.DOCKER_IMAGE }}:${{ env.DOCKER_TAG }}|" | \
+          sed "s/replicas: [0-9]*/replicas: ${{ env.REPLICAS }}/" | \
           kubectl apply -f -
 
       - name: Deploy Hot Cluster Service

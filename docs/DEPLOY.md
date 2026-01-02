@@ -1,6 +1,9 @@
-# Deployment Instructions
+# Kubernetes Deployment Guide
+
+General guide for deploying the backend service to any Kubernetes cluster.
 
 ## Prerequisites
+
 - Docker installed
 - Kubernetes cluster access (kubectl configured)
 - Docker registry access (optional, for image push)
@@ -12,19 +15,19 @@
 docker build -t backend-service:latest .
 
 # If using a registry, tag and push:
-# docker tag backend-service:latest <registry>/backend-service:latest
-# docker push <registry>/backend-service:latest
+docker tag backend-service:latest <registry>/backend-service:latest
+docker push <registry>/backend-service:latest
 ```
 
-## Step 2: Load Image to Cluster (if using local cluster)
+## Step 2: Load Image to Cluster
 
-For local/minikube/kind clusters, load the image directly:
+For local clusters (minikube/kind):
 
 ```bash
-# For minikube
+# Minikube
 minikube image load backend-service:latest
 
-# For kind
+# Kind
 kind load docker-image backend-service:latest
 ```
 
@@ -36,8 +39,9 @@ Apply manifests in order:
 # Create namespace
 kubectl apply -f k8s/namespace.yaml
 
-# Create ConfigMap
-kubectl apply -f k8s/configmap.yaml
+# Create ConfigMap (choose hot or standby)
+kubectl apply -f k8s/configmap-hot.yaml
+# OR for standby: kubectl apply -f k8s/configmap-standby.yaml
 
 # Create Deployment
 kubectl apply -f k8s/deployment.yaml
@@ -61,7 +65,7 @@ kubectl get pods -n backend
 # Check service
 kubectl get svc -n backend
 
-# Check deployment status
+# Check deployment
 kubectl get deployment -n backend
 
 # View logs
@@ -71,17 +75,15 @@ kubectl logs -n backend -l app=backend-service --tail=50
 ## Step 5: Test the Service
 
 ```bash
-# Port forward to access the service locally
+# Port forward
 kubectl port-forward -n backend svc/backend-service 8080:80
 
-# In another terminal, test endpoints:
+# Test endpoints
 curl http://localhost:8080/healthz
 curl http://localhost:8080/
 ```
 
 ## Updating CLUSTER_ROLE
-
-To change the cluster role (e.g., to "standby"):
 
 ```bash
 # Update ConfigMap
@@ -91,9 +93,21 @@ kubectl set data configmap/backend-config CLUSTER_ROLE=standby -n backend
 kubectl rollout restart deployment/backend-service -n backend
 ```
 
-Or edit the ConfigMap directly:
+Or edit directly:
 
 ```bash
 kubectl edit configmap backend-config -n backend
 ```
 
+## High Availability Setup
+
+For hot/standby failover with HAProxy:
+
+```bash
+# Deploy HAProxy components
+kubectl apply -f k8s/haproxy-configmap.yaml
+kubectl apply -f k8s/haproxy-deployment.yaml
+kubectl apply -f k8s/haproxy-service.yaml
+```
+
+HAProxy will automatically route traffic to the hot cluster and failover to standby if needed.
