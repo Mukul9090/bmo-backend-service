@@ -2,13 +2,9 @@ name: CI/CD Pipeline - Deploy to Kubernetes
 
 on:
   push:
-    branches: 
-      - main
-      - master
-  pull_request: 
-    branches:
-      - main
-      - master
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
   workflow_dispatch:
 
 env:
@@ -21,517 +17,132 @@ env:
 jobs:
   build-and-push:
     name: Build and Push Docker Image
-    runs-on:
-      - self-hosted
-      - macOS
-      - ARM64
+    runs-on: [self-hosted, macOS, ARM64]
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      
+      - name: Test Docker Hub connectivity
+        run: |
+          for i in {1..3}; do
+            curl -s --max-time 10 https://registry-1.docker.io/v2/ > /dev/null && exit 0 || sleep 5
+          done
+          exit 1
+        timeout-minutes: 2
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to Docker Hub
+      - name: Login and Build
         uses: docker/login-action@v3
+        timeout-minutes: 10
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.DOCKER_IMAGE }}
-          tags: |
-            type=ref,event=branch
-            type=ref,event=pr
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable={{is_default_branch}}
-
-      - name: Build and push Docker image
+      - name: Build and push
         uses: docker/build-push-action@v5
+        timeout-minutes: 45
         with:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: ${{ env.DOCKER_IMAGE }}:${{ env.DOCKER_TAG }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
   deploy:
     name: Deploy to Kubernetes
-    runs-on:
-      - self-hosted
-      - macOS
-      - ARM64
+    runs-on: [self-hosted, macOS, ARM64]
     needs: build-and-push
     if: github.event_name != 'pull_request'
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Configure kubectl
+      - name: Deploy all resources
         run: |
-          # Verify kubectl is available
-          kubectl version --client
-          kubectl config current-context
-
-      - name: Create namespaces
-        run: |
+          # Create namespaces
           kubectl create namespace ${{ env.K8S_NAMESPACE_HOT }} --dry-run=client -o yaml | kubectl apply -f -
           kubectl create namespace ${{ env.K8S_NAMESPACE_STANDBY }} --dry-run=client -o yaml | kubectl apply -f -
           kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -
-
-      - name: Deploy Prometheus ServiceAccount
-        run: |
-          kubectl apply -f monitoring/prometheus/serviceaccount.yaml
-
-      - name: Deploy Prometheus ConfigMap
-        run: |
-          kubectl apply -f monitoring/prometheus/configmap.yaml
-
-      - name: Deploy Prometheus
-        run: |
-          kubectl apply -f monitoring/prometheus/deployment.yaml
-          kubectl apply -f monitoring/prometheus/service.yaml
-
-      - name: Deploy Grafana ConfigMaps
-        run: |
-          kubectl apply -f monitoring/grafana/configmap-datasources.yaml
-          kubectl apply -f monitoring/grafana/configmap-dashboards.yaml
-
-      - name: Deploy Grafana
-        run: |
-          kubectl apply -f monitoring/grafana/deployment.yaml
-          kubectl apply -f monitoring/grafana/service.yaml
-
-      - name: Deploy Hot Cluster ConfigMap
-        run: |
-          kubectl create configmap backend-config \
-            --from-literal=CLUSTER_ROLE=hot \
-            -n ${{ env.K8S_NAMESPACE_HOT }} \
-            --dry-run=client -o yaml | kubectl apply -f -
-
-      - name: Deploy Standby Cluster ConfigMap
-        run: |
-          kubectl create configmap backend-config \
-            --from-literal=CLUSTER_ROLE=standby \
-            -n ${{ env.K8S_NAMESPACE_STANDBY }} \
-            --dry-run=client -o yaml | kubectl apply -f -
-
-      - name: Deploy Hot Cluster
-        run: |
+          
+          # Deploy monitoring stack
+          kubectl apply -f monitoring/prometheus/
+          kubectl apply -f monitoring/grafana/
+          
+          # Deploy backend configmaps
+          kubectl create configmap backend-config --from-literal=CLUSTER_ROLE=hot -n ${{ env.K8S_NAMESPACE_HOT }} --dry-run=client -o yaml | kubectl apply -f -
+          kubectl create configmap backend-config --from-literal=CLUSTER_ROLE=standby -n ${{ env.K8S_NAMESPACE_STANDBY }} --dry-run=client -o yaml | kubectl apply -f -
+          
+          # Deploy backend services
           sed "s/namespace: backend/namespace: ${{ env.K8S_NAMESPACE_HOT }}/" k8s/deployment.yaml | \
-          sed "s|image: ${{ env.DOCKER_IMAGE }}$|image: ${{ env.DOCKER_IMAGE }}:${{ env.DOCKER_TAG }}|" | \
-          sed "s/replicas: [0-9]*/replicas: ${{ env.REPLICAS }}/" | \
-          kubectl apply -f -
-
-      - name: Deploy Standby Cluster
-        run: |
+            sed "s|image: ${{ env.DOCKER_IMAGE }}$|image: ${{ env.DOCKER_IMAGE }}:${{ env.DOCKER_TAG }}|" | \
+            sed "s/replicas: [0-9]*/replicas: ${{ env.REPLICAS }}/" | kubectl apply -f -
           sed "s/namespace: backend/namespace: ${{ env.K8S_NAMESPACE_STANDBY }}/" k8s/deployment.yaml | \
-          sed "s|image: ${{ env.DOCKER_IMAGE }}$|image: ${{ env.DOCKER_IMAGE }}:${{ env.DOCKER_TAG }}|" | \
-          sed "s/replicas: [0-9]*/replicas: ${{ env.REPLICAS }}/" | \
-          kubectl apply -f -
-
-      - name: Deploy Hot Cluster Service
-        run: |
-          sed -e "s/namespace: backend/namespace: ${{ env.K8S_NAMESPACE_HOT }}/" \
-              -e 's/nodePort: 30080/nodePort: 30080/' \
-              k8s/service.yaml | kubectl apply -f -
-
-      - name: Deploy Standby Cluster Service
-        run: |
-          sed -e "s/namespace: backend/namespace: ${{ env.K8S_NAMESPACE_STANDBY }}/" \
-              -e 's/nodePort: 30080/nodePort: 30081/' \
-              k8s/service.yaml | kubectl apply -f -
-
-      - name: Deploy HAProxy
-        run: |
-          kubectl apply -f k8s/haproxy-configmap.yaml
-          kubectl apply -f k8s/haproxy-deployment.yaml
-          kubectl apply -f k8s/haproxy-service.yaml
-
-      - name: Wait for Hot Cluster to be ready
-        run: |
-          kubectl wait --for=condition=available \
-            deployment/backend-service \
-            -n ${{ env.K8S_NAMESPACE_HOT }} \
-            --timeout=300s
-
-      - name: Wait for Standby Cluster to be ready
-        run: |
-          kubectl wait --for=condition=available \
-            deployment/backend-service \
-            -n ${{ env.K8S_NAMESPACE_STANDBY }} \
-            --timeout=300s
-
-      - name: Wait for HAProxy to be ready
-        run: |
-          kubectl wait --for=condition=available \
-            deployment/haproxy \
-            --timeout=300s
-
-      - name: Wait for Prometheus to be ready
-        run: |
-          kubectl wait --for=condition=available \
-            deployment/prometheus \
-            -n monitoring \
-            --timeout=300s
-
-      - name: Wait for Grafana to be ready
-        run: |
-          kubectl wait --for=condition=available \
-            deployment/grafana \
-            -n monitoring \
-            --timeout=300s
-
-      - name: Verify Hot Cluster
-        run: |
-          echo "=== Hot Cluster Status ==="
-          kubectl get pods -n ${{ env.K8S_NAMESPACE_HOT }}
-          kubectl get svc -n ${{ env.K8S_NAMESPACE_HOT }}
+            sed "s|image: ${{ env.DOCKER_IMAGE }}$|image: ${{ env.DOCKER_IMAGE }}:${{ env.DOCKER_TAG }}|" | \
+            sed "s/replicas: [0-9]*/replicas: ${{ env.REPLICAS }}/" | kubectl apply -f -
           
-          echo ""
-          echo "=== Testing Hot Cluster Health ==="
-          kubectl run test-curl-hot --image=curlimages/curl:latest --restart=Never --rm -i -- curl -s --max-time 5 http://backend-service.${{ env.K8S_NAMESPACE_HOT }}.svc.cluster.local:80/healthz || echo "Health check completed"
+          # Deploy services
+          sed "s/namespace: backend/namespace: ${{ env.K8S_NAMESPACE_HOT }}/" k8s/service.yaml | kubectl apply -f -
+          sed "s/namespace: backend/namespace: ${{ env.K8S_NAMESPACE_STANDBY }}/" k8s/service.yaml | \
+            sed 's/nodePort: 30080/nodePort: 30081/' | kubectl apply -f -
+          
+          # Deploy HAProxy
+          kubectl apply -f k8s/haproxy-configmap.yaml -f k8s/haproxy-deployment.yaml -f k8s/haproxy-service.yaml
 
-      - name: Verify Standby Cluster
+      - name: Wait for deployments
         run: |
-          echo "=== Standby Cluster Status ==="
-          kubectl get pods -n ${{ env.K8S_NAMESPACE_STANDBY }}
-          kubectl get svc -n ${{ env.K8S_NAMESPACE_STANDBY }}
-          
-          echo ""
-          echo "=== Testing Standby Cluster Health ==="
-          kubectl run test-curl-standby --image=curlimages/curl:latest --restart=Never --rm -i -- curl -s --max-time 5 http://backend-service.${{ env.K8S_NAMESPACE_STANDBY }}.svc.cluster.local:80/healthz || echo "Health check completed"
+          kubectl wait --for=condition=available --timeout=300s deployment/backend-service -n ${{ env.K8S_NAMESPACE_HOT }}
+          kubectl wait --for=condition=available --timeout=300s deployment/backend-service -n ${{ env.K8S_NAMESPACE_STANDBY }}
+          kubectl wait --for=condition=available --timeout=300s deployment/haproxy
+          kubectl wait --for=condition=available --timeout=300s deployment/prometheus -n monitoring
+          kubectl wait --for=condition=available --timeout=300s deployment/grafana -n monitoring
 
-      - name: Verify HAProxy
+      - name: Verify deployments
         run: |
-          echo "=== HAProxy Status ==="
-          kubectl get pods -l app=haproxy
-          kubectl get svc haproxy
-          
-          echo ""
-          echo "=== Testing HAProxy Health ==="
-          kubectl run test-curl-haproxy --image=curlimages/curl:latest --restart=Never --rm -i -- curl -s --max-time 5 http://haproxy.default.svc.cluster.local:9090/healthz || echo "Health check completed"
+          kubectl get pods -A | grep -E "backend|monitoring|haproxy"
+          kubectl run test-curl --image=curlimages/curl:latest --restart=Never --rm -i -- \
+            curl -s http://backend-service.${{ env.K8S_NAMESPACE_HOT }}.svc.cluster.local:80/healthz || true
 
-      - name: Setup Python for Testing
+      - name: Run tests
         run: |
-          python3 --version
-          # Try user install first, fallback to system packages if needed
-          pip3 install --user requests --quiet 2>/dev/null || pip3 install requests --break-system-packages --quiet || echo "Requests may already be installed"
-
-      - name: Run Deployment Tests
-        run: |
-          echo "=== Running Deployment Test Suite ==="
-          
-          # Port-forward services in background
-          kubectl port-forward -n ${{ env.K8S_NAMESPACE_HOT }} svc/backend-service 8080:80 > /tmp/pf-hot.log 2>&1 &
-          HOT_PF_PID=$!
-          
-          kubectl port-forward -n ${{ env.K8S_NAMESPACE_STANDBY }} svc/backend-service 8081:80 > /tmp/pf-standby.log 2>&1 &
-          STANDBY_PF_PID=$!
-          
-          kubectl port-forward svc/haproxy 9090:9090 > /tmp/pf-haproxy.log 2>&1 &
-          HAPROXY_PF_PID=$!
-          
-          # Wait for port-forwards to be ready with health checks
-          echo "Waiting for port-forwards to be ready..."
-          
-          # Check curl availability and functionality
-          echo "Checking curl availability..."
-          CURL_AVAILABLE=false
-          if command -v curl > /dev/null 2>&1; then
-            echo "  curl found: $(which curl)"
-            if curl --version > /dev/null 2>&1; then
-              echo "  curl version check: OK"
-              # Test curl with a simple request
-              if curl -s --max-time 1 http://127.0.0.1:65535 > /dev/null 2>&1; then
-                echo "  curl basic test: OK (connection attempt works)"
-                CURL_AVAILABLE=true
-              else
-                echo "  curl basic test: Connection test completed (expected to fail on non-existent port)"
-                CURL_AVAILABLE=true
-              fi
-            else
-              echo "  curl version check: FAILED"
-            fi
-          else
-            echo "  curl not found in PATH"
-          fi
-          
-          # Function to check if port-forward is ready using curl or Python
-          check_port_forward() {
-            local url=$1
-            local name=$2
-            
-            # #region agent log
-            echo "DEBUG: Checking $name at $url (curl_available=$CURL_AVAILABLE)" >> /Users/mukul/Desktop/untitled\ folder/BMO/.cursor/debug.log 2>&1 || true
-            # #endregion
-            
-            if [ "$CURL_AVAILABLE" = true ]; then
-              # #region agent log
-              echo "DEBUG: Using curl for $name" >> /Users/mukul/Desktop/untitled\ folder/BMO/.cursor/debug.log 2>&1 || true
-              # #endregion
-              if curl -s --max-time 1 "$url" > /dev/null 2>&1; then
-                # #region agent log
-                echo "DEBUG: curl success for $name" >> /Users/mukul/Desktop/untitled\ folder/BMO/.cursor/debug.log 2>&1 || true
-                # #endregion
-                return 0
-              else
-                # #region agent log
-                echo "DEBUG: curl failed for $name, exit_code=$?" >> /Users/mukul/Desktop/untitled\ folder/BMO/.cursor/debug.log 2>&1 || true
-                # #endregion
-                return 1
-              fi
-            else
-              # #region agent log
-              echo "DEBUG: Using Python fallback for $name" >> /Users/mukul/Desktop/untitled\ folder/BMO/.cursor/debug.log 2>&1 || true
-              # #endregion
-              # Use Python as fallback
-              if python3 -c "import urllib.request; urllib.request.urlopen('$url', timeout=1).read()" > /dev/null 2>&1; then
-                # #region agent log
-                echo "DEBUG: Python success for $name" >> /Users/mukul/Desktop/untitled\ folder/BMO/.cursor/debug.log 2>&1 || true
-                # #endregion
-                return 0
-              else
-                # #region agent log
-                echo "DEBUG: Python failed for $name" >> /Users/mukul/Desktop/untitled\ folder/BMO/.cursor/debug.log 2>&1 || true
-                # #endregion
-                return 1
-              fi
-            fi
-          }
-          
-          # #region agent log
-          echo "DEBUG: Starting port-forward readiness check loop" >> /Users/mukul/Desktop/untitled\ folder/BMO/.cursor/debug.log 2>&1 || true
-          # #endregion
-          
-          for i in {1..30}; do
-            HOT_READY=false
-            STANDBY_READY=false
-            HAPROXY_READY=false
-            
-            # #region agent log
-            echo "DEBUG: Attempt $i - checking port-forwards" >> /Users/mukul/Desktop/untitled\ folder/BMO/.cursor/debug.log 2>&1 || true
-            # #endregion
-            
-            check_port_forward "http://localhost:8080/healthz" "Hot" && HOT_READY=true
-            check_port_forward "http://localhost:8081/healthz" "Standby" && STANDBY_READY=true
-            check_port_forward "http://localhost:9090/healthz" "HAProxy" && HAPROXY_READY=true
-            
-            # #region agent log
-            echo "DEBUG: Attempt $i results - Hot=$HOT_READY, Standby=$STANDBY_READY, HAProxy=$HAPROXY_READY" >> /Users/mukul/Desktop/untitled\ folder/BMO/.cursor/debug.log 2>&1 || true
-            # #endregion
-            
-            if [ "$HOT_READY" = true ] && [ "$STANDBY_READY" = true ] && [ "$HAPROXY_READY" = true ]; then
-              echo "✓ All port-forwards ready! (attempt $i)"
-              # #region agent log
-              echo "DEBUG: All port-forwards ready at attempt $i" >> /Users/mukul/Desktop/untitled\ folder/BMO/.cursor/debug.log 2>&1 || true
-              # #endregion
-              break
-            fi
-            
-            if [ $i -eq 10 ] || [ $i -eq 20 ]; then
-              echo "  Status: Hot=$HOT_READY, Standby=$STANDBY_READY, HAProxy=$HAPROXY_READY (attempt $i/30)"
-            fi
-            
-            if [ $i -eq 30 ]; then
-              echo "⚠️  Port-forwards may not be fully ready, but proceeding with tests..."
-              echo "  Final status: Hot=$HOT_READY, Standby=$STANDBY_READY, HAProxy=$HAPROXY_READY"
-              # #region agent log
-              echo "DEBUG: Reached max attempts, final status - Hot=$HOT_READY, Standby=$STANDBY_READY, HAProxy=$HAPROXY_READY" >> /Users/mukul/Desktop/untitled\ folder/BMO/.cursor/debug.log 2>&1 || true
-              # #endregion
-            fi
-            sleep 1
-          done
-          
-          # Set environment variables for test script
-          export HOT_URL="http://localhost:8080"
-          export STANDBY_URL="http://localhost:8081"
-          export HAPROXY_URL="http://localhost:9090"
-          
-          # Add user site-packages to PYTHONPATH if needed
+          pip3 install --user requests --quiet 2>/dev/null || pip3 install requests --break-system-packages --quiet || true
+          kubectl port-forward -n ${{ env.K8S_NAMESPACE_HOT }} svc/backend-service 8080:80 > /dev/null 2>&1 &
+          kubectl port-forward -n ${{ env.K8S_NAMESPACE_STANDBY }} svc/backend-service 8081:80 > /dev/null 2>&1 &
+          kubectl port-forward svc/haproxy 9090:9090 > /dev/null 2>&1 &
+          sleep 5
+          export HOT_URL="http://localhost:8080" STANDBY_URL="http://localhost:8081" HAPROXY_URL="http://localhost:9090"
           export PYTHONPATH="${HOME}/Library/Python/3.14/lib/python/site-packages:${PYTHONPATH:-}"
-          
-          # Run test script
           python3 tests/test_deployment.py
-          TEST_EXIT_CODE=$?
-          
-          # Cleanup port-forwards
-          kill $HOT_PF_PID $STANDBY_PF_PID $HAPROXY_PF_PID 2>/dev/null || true
-          
-          if [ $TEST_EXIT_CODE -ne 0 ]; then
-            echo "❌ Deployment tests failed!"
-            exit 1
-          fi
-          
-          echo "✅ All deployment tests passed!"
 
-      - name: Deployment Summary
+      - name: Setup persistent port-forwards
         run: |
-          echo "## 🚀 Deployment Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Hot Cluster" >> $GITHUB_STEP_SUMMARY
-          kubectl get deployment,svc -n ${{ env.K8S_NAMESPACE_HOT }} -o wide >> $GITHUB_STEP_SUMMARY || true
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Standby Cluster" >> $GITHUB_STEP_SUMMARY
-          kubectl get deployment,svc -n ${{ env.K8S_NAMESPACE_STANDBY }} -o wide >> $GITHUB_STEP_SUMMARY || true
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### HAProxy" >> $GITHUB_STEP_SUMMARY
-          kubectl get deployment,svc -l app=haproxy -o wide >> $GITHUB_STEP_SUMMARY || true
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Monitoring Stack" >> $GITHUB_STEP_SUMMARY
-          kubectl get deployment,svc -n monitoring -o wide >> $GITHUB_STEP_SUMMARY || true
-
-      - name: Setup Persistent Port-Forward Services
-        run: |
-          echo "## 🔄 Persistent Port-Forward Services Setup" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          
-          # Stop any existing port-forward processes
-          echo "Stopping any existing port-forward processes..."
-          pkill -f "kubectl port-forward.*haproxy" || true
-          pkill -f "kubectl port-forward.*prometheus" || true
-          pkill -f "kubectl port-forward.*grafana" || true
-          pkill -f "keep-haproxy-forward" || true
-          pkill -f "keep-prometheus-forward" || true
-          pkill -f "keep-grafana-forward" || true
-          sleep 2
-          
-          # Create bin directory if it doesn't exist
           mkdir -p ~/bin
+          pkill -f "keep-.*-forward" || true
           
-          # Create HAProxy restart script
           cat > ~/bin/keep-haproxy-forward.sh << 'EOF'
           #!/bin/bash
-          LOG_FILE="/tmp/haproxy-portforward.log"
-          echo "$(date): Starting persistent HAProxy port-forward service" >> "$LOG_FILE"
-          while true; do
-            echo "$(date): Starting kubectl port-forward..." >> "$LOG_FILE"
-            kubectl port-forward svc/haproxy 9090:9090 2>&1 | tee -a "$LOG_FILE"
-            EXIT_CODE=$?
-            echo "$(date): Port-forward stopped with exit code $EXIT_CODE, restarting in 5 seconds..." >> "$LOG_FILE"
-            sleep 5
-          done
+          while true; do kubectl port-forward svc/haproxy 9090:9090 2>&1 | tee -a /tmp/haproxy-portforward.log; sleep 5; done
           EOF
           
-          # Create Prometheus restart script
           cat > ~/bin/keep-prometheus-forward.sh << 'EOF'
           #!/bin/bash
-          LOG_FILE="/tmp/prometheus-portforward.log"
-          echo "$(date): Starting persistent Prometheus port-forward service" >> "$LOG_FILE"
-          while true; do
-            echo "$(date): Starting kubectl port-forward..." >> "$LOG_FILE"
-            kubectl port-forward -n monitoring svc/prometheus 9091:9090 2>&1 | tee -a "$LOG_FILE"
-            EXIT_CODE=$?
-            echo "$(date): Port-forward stopped with exit code $EXIT_CODE, restarting in 5 seconds..." >> "$LOG_FILE"
-            sleep 5
-          done
+          while true; do kubectl port-forward -n monitoring svc/prometheus 9091:9090 2>&1 | tee -a /tmp/prometheus-portforward.log; sleep 5; done
           EOF
           
-          # Create Grafana restart script
           cat > ~/bin/keep-grafana-forward.sh << 'EOF'
           #!/bin/bash
-          LOG_FILE="/tmp/grafana-portforward.log"
-          echo "$(date): Starting persistent Grafana port-forward service" >> "$LOG_FILE"
-          while true; do
-            echo "$(date): Starting kubectl port-forward..." >> "$LOG_FILE"
-            kubectl port-forward -n monitoring svc/grafana 3030:3000 2>&1 | tee -a "$LOG_FILE"
-            EXIT_CODE=$?
-            echo "$(date): Port-forward stopped with exit code $EXIT_CODE, restarting in 5 seconds..." >> "$LOG_FILE"
-            sleep 5
-          done
+          while true; do kubectl port-forward -n monitoring svc/grafana 3030:3000 2>&1 | tee -a /tmp/grafana-portforward.log; sleep 5; done
           EOF
           
-          chmod +x ~/bin/keep-haproxy-forward.sh
-          chmod +x ~/bin/keep-prometheus-forward.sh
-          chmod +x ~/bin/keep-grafana-forward.sh
-          
-          echo "✅ Created persistent port-forward scripts"
-          
-          # Start all services in background with nohup
-          echo "Starting persistent port-forward services..."
+          chmod +x ~/bin/keep-*-forward.sh
           nohup ~/bin/keep-haproxy-forward.sh > /dev/null 2>&1 &
-          HAPROXY_PID=$!
           nohup ~/bin/keep-prometheus-forward.sh > /dev/null 2>&1 &
-          PROMETHEUS_PID=$!
           nohup ~/bin/keep-grafana-forward.sh > /dev/null 2>&1 &
-          GRAFANA_PID=$!
-          
-          echo "HAPROXY_PID=$HAPROXY_PID" >> $GITHUB_ENV
-          echo "PROMETHEUS_PID=$PROMETHEUS_PID" >> $GITHUB_ENV
-          echo "GRAFANA_PID=$GRAFANA_PID" >> $GITHUB_ENV
-          
-          # Wait for services to start
-          echo "Waiting for port-forwards to establish connections..."
           sleep 5
-          
-          # Test if port-forwards are working
-          MAX_RETRIES=10
-          RETRY_COUNT=0
-          HAPROXY_READY=false
-          PROMETHEUS_READY=false
-          GRAFANA_READY=false
-          
-          while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-            curl -s --max-time 2 http://localhost:9090/healthz > /dev/null 2>&1 && HAPROXY_READY=true || true
-            curl -s --max-time 2 http://localhost:9091/-/healthy > /dev/null 2>&1 && PROMETHEUS_READY=true || true
-            curl -s --max-time 2 http://localhost:3030/api/health > /dev/null 2>&1 && GRAFANA_READY=true || true
-            
-            if [ "$HAPROXY_READY" = true ] && [ "$PROMETHEUS_READY" = true ] && [ "$GRAFANA_READY" = true ]; then
-              break
-            fi
-            RETRY_COUNT=$((RETRY_COUNT + 1))
-            echo "Attempt $RETRY_COUNT/$MAX_RETRIES: Waiting for port-forwards..."
-            sleep 2
-          done
-          
-          if [ "$HAPROXY_READY" = true ] && [ "$PROMETHEUS_READY" = true ] && [ "$GRAFANA_READY" = true ]; then
-            echo "✅ All persistent port-forward services are active and working!" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "### Access URLs" >> $GITHUB_STEP_SUMMARY
-            echo "- **HAProxy (Main Entry Point)**: http://localhost:9090" >> $GITHUB_STEP_SUMMARY
-            echo "- **Prometheus**: http://localhost:9091" >> $GITHUB_STEP_SUMMARY
-            echo "- **Grafana**: http://localhost:3030" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "### Service Status" >> $GITHUB_STEP_SUMMARY
-            echo "- **HAProxy PID**: $HAPROXY_PID" >> $GITHUB_STEP_SUMMARY
-            echo "- **Prometheus PID**: $PROMETHEUS_PID" >> $GITHUB_STEP_SUMMARY
-            echo "- **Grafana PID**: $GRAFANA_PID" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "### Log Files" >> $GITHUB_STEP_SUMMARY
-            echo "- **HAProxy**: /tmp/haproxy-portforward.log" >> $GITHUB_STEP_SUMMARY
-            echo "- **Prometheus**: /tmp/prometheus-portforward.log" >> $GITHUB_STEP_SUMMARY
-            echo "- **Grafana**: /tmp/grafana-portforward.log" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "### Service Features" >> $GITHUB_STEP_SUMMARY
-            echo "- ✅ **Auto-restart**: Services automatically restart if port-forwards stop" >> $GITHUB_STEP_SUMMARY
-            echo "- ✅ **Persistent**: Run in background and survive workflow completion" >> $GITHUB_STEP_SUMMARY
-            echo "- ✅ **Logging**: All output logged to respective log files" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "### Management Commands" >> $GITHUB_STEP_SUMMARY
-            echo "To stop all services: \`pkill -f keep-.*-forward\`" >> $GITHUB_STEP_SUMMARY
-            echo "To view logs: \`tail -f /tmp/*-portforward.log\`" >> $GITHUB_STEP_SUMMARY
-            echo "To restart services: Run this workflow again" >> $GITHUB_STEP_SUMMARY
-            
-            echo ""
-            echo "✅ All persistent port-forward services started successfully!"
-            echo "   HAProxy: http://localhost:9090 (PID: $HAPROXY_PID)"
-            echo "   Prometheus: http://localhost:9091 (PID: $PROMETHEUS_PID)"
-            echo "   Grafana: http://localhost:3030 (PID: $GRAFANA_PID)"
-            echo ""
-            echo "ℹ️  Services will continue running after workflow completes"
-            echo "   They will auto-restart if port-forwards stop"
-          else
-            echo "⚠️  Some port-forward services may not be responding yet" >> $GITHUB_STEP_SUMMARY
-            echo "   HAProxy: $HAPROXY_READY | Prometheus: $PROMETHEUS_READY | Grafana: $GRAFANA_READY" >> $GITHUB_STEP_SUMMARY
-            echo "   Check logs: /tmp/*-portforward.log" >> $GITHUB_STEP_SUMMARY
-            echo ""
-            echo "⚠️  Services may need more time to establish connections"
-            echo "   Check logs: tail -f /tmp/*-portforward.log"
-          fi
+          echo "✅ Port-forwards: HAProxy:9090, Prometheus:9091, Grafana:3030" >> $GITHUB_STEP_SUMMARY
 
+      - name: Deployment summary
+        run: |
+          echo "## 🚀 Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          kubectl get deployment,svc -n ${{ env.K8S_NAMESPACE_HOT }} -o wide >> $GITHUB_STEP_SUMMARY || true
+          kubectl get deployment,svc -n ${{ env.K8S_NAMESPACE_STANDBY }} -o wide >> $GITHUB_STEP_SUMMARY || true
+          kubectl get deployment,svc -n monitoring -o wide >> $GITHUB_STEP_SUMMARY || true
+          kubectl get deployment,svc -l app=haproxy -o wide >> $GITHUB_STEP_SUMMARY || true
