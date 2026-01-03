@@ -58,10 +58,9 @@ jobs:
 
       - name: Deploy all resources
         run: |
-          # Create namespaces
-          kubectl create namespace ${{ env.K8S_NAMESPACE_HOT }} --dry-run=client -o yaml | kubectl apply -f -
-          kubectl create namespace ${{ env.K8S_NAMESPACE_STANDBY }} --dry-run=client -o yaml | kubectl apply -f -
-          kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -
+          # Create namespaces with labels
+          kubectl apply -f k8s/namespace.yaml
+          kubectl apply -f monitoring/namespace.yaml
           
           # Deploy monitoring stack
           kubectl apply -f monitoring/prometheus/
@@ -86,6 +85,10 @@ jobs:
           
           # Deploy HAProxy
           kubectl apply -f k8s/haproxy-configmap.yaml -f k8s/haproxy-deployment.yaml -f k8s/haproxy-service.yaml
+          
+          # Deploy network policies (security)
+          kubectl apply -f k8s/network-policy-backend.yaml
+          kubectl apply -f k8s/network-policy-haproxy.yaml
 
       - name: Wait for deployments
         run: |

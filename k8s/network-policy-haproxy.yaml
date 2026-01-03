@@ -1,0 +1,57 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: haproxy-network-policy
+  namespace: default
+spec:
+  podSelector:
+    matchLabels:
+      app: haproxy
+  policyTypes:
+  - Ingress
+  - Egress
+  
+  ingress:
+  # Allow traffic from anywhere (HAProxy is the entry point)
+  - {}
+  
+  egress:
+  # Allow traffic to backend services (both service port and pod port)
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: backend-hot
+      podSelector:
+        matchLabels:
+          app: backend-service
+    ports:
+    - protocol: TCP
+      port: 80    # Service port
+    - protocol: TCP
+      port: 8080  # Pod port (for health checks and direct access)
+  
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: backend-standby
+      podSelector:
+        matchLabels:
+          app: backend-service
+    ports:
+    - protocol: TCP
+      port: 80    # Service port
+    - protocol: TCP
+      port: 8080  # Pod port (for health checks and direct access)
+  
+  # Allow DNS queries
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: kube-system
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+    ports:
+    - protocol: UDP
+      port: 53
+

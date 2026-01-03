@@ -1,21 +1,66 @@
-__pycache__
-*.pyc
-*.pyo
-*.pyd
-.Python
-*.so
-*.egg
-*.egg-info
-dist
-build
+# Git
 .git
 .gitignore
-README.md
-DEPLOY.md
+.github
+
+# IDE
+.vscode
+.idea
+.cursor
+*.swp
+*.swo
+
+# Documentation
 docs/
-k8s/
-.env
-.venv
+*.md
+!README.md
+
+# Testing
+tests/
+test_*.py
+pytest.ini
+.pytest_cache
+.coverage
+htmlcov/
+
+# Ansible (not needed in container)
+ansible/
+
+# Development scripts
+*.sh
+!scripts/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
 venv/
 ENV/
+.venv
+*.egg-info/
+dist/
+build/
+.pytest_cache/
 
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Kubernetes (not needed in container)
+k8s/
+monitoring/
+
+# CI/CD (not needed in container)
+.github/
+
+# Temporary files
+*.tmp
+*.temp
+*.bak

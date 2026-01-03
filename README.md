@@ -82,9 +82,7 @@ pytest --cov=server --cov-report=html
 ## Documentation
 
 - [Deployment Guide](docs/DEPLOY.md) - General Kubernetes deployment
-- [Minikube Guide](docs/MINIKUBE.md) - Local development with Minikube
-- [CI/CD Pipeline](docs/CI-CD.md) - GitHub Actions setup
-- [Docker Hub Setup](docs/DOCKERHUB-SETUP.md) - Container registry configuration
+- [CI/CD Pipeline](docs/CI-CD.md) - GitHub Actions setup and Docker Hub configuration
 
 ## Architecture
 
