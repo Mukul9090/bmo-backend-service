@@ -164,32 +164,27 @@ jobs:
           kubectl get svc backend-service --context=$HOT_CTX -n default || echo "Hot service not found"
           kubectl get svc backend-service --context=$STANDBY_CTX -n default || echo "Standby service not found"
           
-          # Get service endpoints - use DNS for same cluster, IPs for different clusters
-          if [ "$HOT_CTX" = "$STANDBY_CTX" ]; then
-            # Same cluster - use internal DNS (stable, doesn't change with service recreation)
-            HOT_ENDPOINT="backend-service.default.svc.cluster.local:80"
-            STANDBY_ENDPOINT="backend-service.default.svc.cluster.local:80"
-            echo "Same cluster - using internal DNS: $HOT_ENDPOINT"
-            echo "Note: Both point to same service, HAProxy will route based on pod health"
-          else
-            # Different clusters - get ClusterIP or external IPs
-            HOT_CLUSTERIP=$(kubectl get svc backend-service --context=$HOT_CTX -n default -o jsonpath='{.spec.clusterIP}' 2>/dev/null || echo "")
-            STANDBY_CLUSTERIP=$(kubectl get svc backend-service --context=$STANDBY_CTX -n default -o jsonpath='{.spec.clusterIP}' 2>/dev/null || echo "")
-            
-            if [ -n "$HOT_CLUSTERIP" ] && [ -n "$STANDBY_CLUSTERIP" ]; then
-              # Use ClusterIPs (more stable than LoadBalancer IPs)
-              HOT_ENDPOINT="${HOT_CLUSTERIP}:80"
-              STANDBY_ENDPOINT="${STANDBY_CLUSTERIP}:80"
-              echo "Using ClusterIPs - Hot=$HOT_ENDPOINT, Standby=$STANDBY_ENDPOINT"
+          # Get service endpoints - use ClusterIP (HAProxy can't resolve Kubernetes DNS)
+          HOT_CLUSTERIP=$(kubectl get svc backend-service --context=$HOT_CTX -n default -o jsonpath='{.spec.clusterIP}' 2>/dev/null || echo "")
+          STANDBY_CLUSTERIP=$(kubectl get svc backend-service --context=$STANDBY_CTX -n default -o jsonpath='{.spec.clusterIP}' 2>/dev/null || echo "")
+          
+          if [ -n "$HOT_CLUSTERIP" ] && [ -n "$STANDBY_CLUSTERIP" ]; then
+            # Use ClusterIPs (HAProxy can resolve IPs, not DNS names)
+            HOT_ENDPOINT="${HOT_CLUSTERIP}:80"
+            STANDBY_ENDPOINT="${STANDBY_CLUSTERIP}:80"
+            if [ "$HOT_CTX" = "$STANDBY_CTX" ]; then
+              echo "Same cluster - using ClusterIP: $HOT_ENDPOINT (both point to same service)"
             else
-              # Fallback to external IPs or node IPs
-              HOT_ENDPOINT=$(kubectl get svc backend-service --context=$HOT_CTX -n default -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || kubectl get nodes --context=$HOT_CTX -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null || echo "localhost")
-              STANDBY_ENDPOINT=$(kubectl get svc backend-service --context=$STANDBY_CTX -n default -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || kubectl get nodes --context=$STANDBY_CTX -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null || echo "localhost")
-              # Add port if not present
-              [[ "$HOT_ENDPOINT" != *":"* ]] && HOT_ENDPOINT="${HOT_ENDPOINT}:80"
-              [[ "$STANDBY_ENDPOINT" != *":"* ]] && STANDBY_ENDPOINT="${STANDBY_ENDPOINT}:80"
-              echo "Using external IPs - Hot=$HOT_ENDPOINT, Standby=$STANDBY_ENDPOINT"
+              echo "Using ClusterIPs - Hot=$HOT_ENDPOINT, Standby=$STANDBY_ENDPOINT"
             fi
+          else
+            # Fallback to external IPs or node IPs
+            HOT_ENDPOINT=$(kubectl get svc backend-service --context=$HOT_CTX -n default -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || kubectl get nodes --context=$HOT_CTX -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null || echo "localhost")
+            STANDBY_ENDPOINT=$(kubectl get svc backend-service --context=$STANDBY_CTX -n default -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || kubectl get nodes --context=$STANDBY_CTX -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null || echo "localhost")
+            # Add port if not present
+            [[ "$HOT_ENDPOINT" != *":"* ]] && HOT_ENDPOINT="${HOT_ENDPOINT}:80"
+            [[ "$STANDBY_ENDPOINT" != *":"* ]] && STANDBY_ENDPOINT="${STANDBY_ENDPOINT}:80"
+            echo "Using external IPs - Hot=$HOT_ENDPOINT, Standby=$STANDBY_ENDPOINT"
           fi
           
           echo "Hot cluster endpoint: $HOT_ENDPOINT"
