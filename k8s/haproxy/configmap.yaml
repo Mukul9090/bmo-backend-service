@@ -28,12 +28,12 @@ data:
       http-check expect status 200
       
       # Hot cluster (primary) - will automatically get traffic when healthy
-      # Using internal DNS for single-cluster setup
-      # For multi-cluster: replace with external IP like 192.168.1.100:80
-      server hot backend-service.backend-hot.svc.cluster.local:80 check inter 1s fall 2 rise 1 fastinter 500ms downinter 1s
+      # Replace <HOT_CLUSTER_EXTERNAL_IP> with the actual LoadBalancer IP or NodePort endpoint
+      # Example: 192.168.1.100:80 or hot-cluster.example.com:80
+      server hot <HOT_CLUSTER_EXTERNAL_IP>:80 check inter 1s fall 2 rise 1 fastinter 500ms downinter 1s
       
       # Standby cluster (backup) - only used when hot is down
-      # Using internal DNS for single-cluster setup
-      # For multi-cluster: replace with external IP like 192.168.1.101:80
-      server standby backend-service.backend-standby.svc.cluster.local:80 check inter 1s fall 2 rise 1 fastinter 500ms downinter 1s backup
+      # Replace <STANDBY_CLUSTER_EXTERNAL_IP> with the actual LoadBalancer IP or NodePort endpoint
+      # Example: 192.168.1.101:80 or standby-cluster.example.com:80
+      server standby <STANDBY_CLUSTER_EXTERNAL_IP>:80 check inter 1s fall 2 rise 1 fastinter 500ms downinter 1s backup
 

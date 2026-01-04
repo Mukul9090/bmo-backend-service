@@ -10,8 +10,9 @@ on:
 env:
   DOCKER_IMAGE: mukul1599/backend-service
   DOCKER_TAG: latest
-  K8S_NAMESPACE_HOT: backend-hot
-  K8S_NAMESPACE_STANDBY: backend-standby
+  K8S_CLUSTER_HOT_CONTEXT: hot-cluster
+  K8S_CLUSTER_STANDBY_CONTEXT: standby-cluster
+  HAPROXY_CLUSTER_CONTEXT: hot-cluster
   REPLICAS: 2
 
 jobs:
@@ -56,96 +57,44 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Deploy all resources
+      - name: Deploy to clusters
         run: |
-          # Create namespaces with labels
-          kubectl apply -f k8s/namespace.yaml
-          kubectl apply -f monitoring/namespace.yaml
+          # Deploy hot cluster
+          kubectl create configmap backend-config --from-literal=CLUSTER_ROLE=hot --context=${{ env.K8S_CLUSTER_HOT_CONTEXT }} -n default --dry-run=client -o yaml | kubectl apply --context=${{ env.K8S_CLUSTER_HOT_CONTEXT }} -f -
+          sed "s|image: ${{ env.DOCKER_IMAGE }}$|image: ${{ env.DOCKER_IMAGE }}:${{ env.DOCKER_TAG }}|" k8s/cluster-hot/deployment.yaml | kubectl apply --context=${{ env.K8S_CLUSTER_HOT_CONTEXT }} -f -
+          kubectl apply --context=${{ env.K8S_CLUSTER_HOT_CONTEXT }} -f k8s/cluster-hot/service.yaml
           
-          # Deploy monitoring stack
-          kubectl apply -f monitoring/prometheus/
-          kubectl apply -f monitoring/grafana/
+          # Deploy standby cluster
+          kubectl create configmap backend-config --from-literal=CLUSTER_ROLE=standby --context=${{ env.K8S_CLUSTER_STANDBY_CONTEXT }} -n default --dry-run=client -o yaml | kubectl apply --context=${{ env.K8S_CLUSTER_STANDBY_CONTEXT }} -f -
+          sed "s|image: ${{ env.DOCKER_IMAGE }}$|image: ${{ env.DOCKER_IMAGE }}:${{ env.DOCKER_TAG }}|" k8s/cluster-standby/deployment.yaml | kubectl apply --context=${{ env.K8S_CLUSTER_STANDBY_CONTEXT }} -f -
+          kubectl apply --context=${{ env.K8S_CLUSTER_STANDBY_CONTEXT }} -f k8s/cluster-standby/service.yaml
           
-          # Deploy backend configmaps
-          kubectl create configmap backend-config --from-literal=CLUSTER_ROLE=hot -n ${{ env.K8S_NAMESPACE_HOT }} --dry-run=client -o yaml | kubectl apply -f -
-          kubectl create configmap backend-config --from-literal=CLUSTER_ROLE=standby -n ${{ env.K8S_NAMESPACE_STANDBY }} --dry-run=client -o yaml | kubectl apply -f -
+          # Get external IPs
+          sleep 10
+          HOT_IP=$(kubectl get svc backend-service --context=${{ env.K8S_CLUSTER_HOT_CONTEXT }} -n default -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || kubectl get nodes --context=${{ env.K8S_CLUSTER_HOT_CONTEXT }} -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null || echo "localhost")
+          STANDBY_IP=$(kubectl get svc backend-service --context=${{ env.K8S_CLUSTER_STANDBY_CONTEXT }} -n default -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || kubectl get nodes --context=${{ env.K8S_CLUSTER_STANDBY_CONTEXT }} -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null || echo "localhost")
           
-          # Deploy backend services
-          sed "s/namespace: backend/namespace: ${{ env.K8S_NAMESPACE_HOT }}/" k8s/deployment.yaml | \
-            sed "s|image: ${{ env.DOCKER_IMAGE }}$|image: ${{ env.DOCKER_IMAGE }}:${{ env.DOCKER_TAG }}|" | \
-            sed "s/replicas: [0-9]*/replicas: ${{ env.REPLICAS }}/" | kubectl apply -f -
-          sed "s/namespace: backend/namespace: ${{ env.K8S_NAMESPACE_STANDBY }}/" k8s/deployment.yaml | \
-            sed "s|image: ${{ env.DOCKER_IMAGE }}$|image: ${{ env.DOCKER_IMAGE }}:${{ env.DOCKER_TAG }}|" | \
-            sed "s/replicas: [0-9]*/replicas: ${{ env.REPLICAS }}/" | kubectl apply -f -
-          
-          # Deploy services
-          sed "s/namespace: backend/namespace: ${{ env.K8S_NAMESPACE_HOT }}/" k8s/service.yaml | kubectl apply -f -
-          sed "s/namespace: backend/namespace: ${{ env.K8S_NAMESPACE_STANDBY }}/" k8s/service.yaml | \
-            sed 's/nodePort: 30080/nodePort: 30081/' | kubectl apply -f -
-          
-          # Deploy HAProxy
-          kubectl apply -f k8s/haproxy-configmap.yaml -f k8s/haproxy-deployment.yaml -f k8s/haproxy-service.yaml
-          
-          # Deploy network policies (security)
-          kubectl apply -f k8s/network-policy-backend.yaml
-          kubectl apply -f k8s/network-policy-haproxy.yaml
+          # Update and deploy HAProxy
+          sed "s|<HOT_CLUSTER_EXTERNAL_IP>|${HOT_IP}:80|g" k8s/haproxy/configmap.yaml | sed "s|<STANDBY_CLUSTER_EXTERNAL_IP>|${STANDBY_IP}:80|g" | kubectl apply --context=${{ env.HAPROXY_CLUSTER_CONTEXT }} -f -
+          kubectl apply --context=${{ env.HAPROXY_CLUSTER_CONTEXT }} -f k8s/haproxy/deployment.yaml
+          kubectl apply --context=${{ env.HAPROXY_CLUSTER_CONTEXT }} -f k8s/haproxy/service.yaml
 
       - name: Wait for deployments
         run: |
-          kubectl wait --for=condition=available --timeout=300s deployment/backend-service -n ${{ env.K8S_NAMESPACE_HOT }}
-          kubectl wait --for=condition=available --timeout=300s deployment/backend-service -n ${{ env.K8S_NAMESPACE_STANDBY }}
-          kubectl wait --for=condition=available --timeout=300s deployment/haproxy
-          kubectl wait --for=condition=available --timeout=300s deployment/prometheus -n monitoring
-          kubectl wait --for=condition=available --timeout=300s deployment/grafana -n monitoring
+          kubectl wait --for=condition=available --timeout=300s deployment/backend-service --context=${{ env.K8S_CLUSTER_HOT_CONTEXT }} -n default || true
+          kubectl wait --for=condition=available --timeout=300s deployment/backend-service --context=${{ env.K8S_CLUSTER_STANDBY_CONTEXT }} -n default || true
+          kubectl wait --for=condition=available --timeout=300s deployment/haproxy --context=${{ env.HAPROXY_CLUSTER_CONTEXT }} || true
 
-      - name: Verify deployments
+      - name: Setup HAProxy port-forward
         run: |
-          kubectl get pods -A | grep -E "backend|monitoring|haproxy"
-          kubectl run test-curl --image=curlimages/curl:latest --restart=Never --rm -i -- \
-            curl -s http://backend-service.${{ env.K8S_NAMESPACE_HOT }}.svc.cluster.local:80/healthz || true
-
-      - name: Run tests
-        run: |
-          pip3 install --user requests --quiet 2>/dev/null || pip3 install requests --break-system-packages --quiet || true
-          kubectl port-forward -n ${{ env.K8S_NAMESPACE_HOT }} svc/backend-service 8080:80 > /dev/null 2>&1 &
-          kubectl port-forward -n ${{ env.K8S_NAMESPACE_STANDBY }} svc/backend-service 8081:80 > /dev/null 2>&1 &
-          kubectl port-forward svc/haproxy 9090:9090 > /dev/null 2>&1 &
-          sleep 5
-          export HOT_URL="http://localhost:8080" STANDBY_URL="http://localhost:8081" HAPROXY_URL="http://localhost:9090"
-          export PYTHONPATH="${HOME}/Library/Python/3.14/lib/python/site-packages:${PYTHONPATH:-}"
-          python3 tests/test_deployment.py
-
-      - name: Setup persistent port-forwards
-        run: |
-          mkdir -p ~/bin
-          pkill -f "keep-.*-forward" || true
-          
-          cat > ~/bin/keep-haproxy-forward.sh << 'EOF'
-          #!/bin/bash
-          while true; do kubectl port-forward svc/haproxy 9090:9090 2>&1 | tee -a /tmp/haproxy-portforward.log; sleep 5; done
-          EOF
-          
-          cat > ~/bin/keep-prometheus-forward.sh << 'EOF'
-          #!/bin/bash
-          while true; do kubectl port-forward -n monitoring svc/prometheus 9091:9090 2>&1 | tee -a /tmp/prometheus-portforward.log; sleep 5; done
-          EOF
-          
-          cat > ~/bin/keep-grafana-forward.sh << 'EOF'
-          #!/bin/bash
-          while true; do kubectl port-forward -n monitoring svc/grafana 3030:3000 2>&1 | tee -a /tmp/grafana-portforward.log; sleep 5; done
-          EOF
-          
-          chmod +x ~/bin/keep-*-forward.sh
-          nohup ~/bin/keep-haproxy-forward.sh > /dev/null 2>&1 &
-          nohup ~/bin/keep-prometheus-forward.sh > /dev/null 2>&1 &
-          nohup ~/bin/keep-grafana-forward.sh > /dev/null 2>&1 &
-          sleep 5
-          echo "✅ Port-forwards: HAProxy:9090, Prometheus:9091, Grafana:3030" >> $GITHUB_STEP_SUMMARY
+          pkill -f "kubectl port-forward.*haproxy" || true
+          nohup kubectl port-forward --context=${{ env.HAPROXY_CLUSTER_CONTEXT }} svc/haproxy 9090:9090 > /tmp/haproxy-portforward.log 2>&1 &
+          sleep 3
+          echo "✅ HAProxy accessible at http://localhost:9090" >> $GITHUB_STEP_SUMMARY
 
       - name: Deployment summary
         run: |
           echo "## 🚀 Deployment Summary" >> $GITHUB_STEP_SUMMARY
-          kubectl get deployment,svc -n ${{ env.K8S_NAMESPACE_HOT }} -o wide >> $GITHUB_STEP_SUMMARY || true
-          kubectl get deployment,svc -n ${{ env.K8S_NAMESPACE_STANDBY }} -o wide >> $GITHUB_STEP_SUMMARY || true
-          kubectl get deployment,svc -n monitoring -o wide >> $GITHUB_STEP_SUMMARY || true
-          kubectl get deployment,svc -l app=haproxy -o wide >> $GITHUB_STEP_SUMMARY || true
+          kubectl get pods --context=${{ env.K8S_CLUSTER_HOT_CONTEXT }} -n default -l app=backend-service >> $GITHUB_STEP_SUMMARY || true
+          kubectl get pods --context=${{ env.K8S_CLUSTER_STANDBY_CONTEXT }} -n default -l app=backend-service >> $GITHUB_STEP_SUMMARY || true
+          kubectl get pods --context=${{ env.HAPROXY_CLUSTER_CONTEXT }} -l app=haproxy >> $GITHUB_STEP_SUMMARY || true

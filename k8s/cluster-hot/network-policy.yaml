@@ -1,7 +1,3 @@
-# Network Policy for Hot Cluster Backend
-# Note: This policy is for reference. Use the cluster-specific policies in cluster-hot/ directory
-# when deploying to separate clusters. Network policies using namespace selectors won't work
-# across clusters since HAProxy will connect via external LoadBalancer/NodePort endpoints.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

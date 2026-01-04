@@ -19,25 +19,6 @@ spec:
   # Allow traffic to external backend clusters via their external endpoints
   # Network policies cannot directly restrict external IPs, but we can allow all egress
   # or use IPBlock for specific external IPs if known
-  # Example with IPBlock (uncomment and replace with actual cluster IPs):
-  # - to:
-  #   - ipBlock:
-  #       cidr: <HOT_CLUSTER_IP>/32
-  #   ports:
-  #   - protocol: TCP
-  #     port: 80
-  #   - protocol: TCP
-  #     port: 8080
-  # - to:
-  #   - ipBlock:
-  #       cidr: <STANDBY_CLUSTER_IP>/32
-  #   ports:
-  #   - protocol: TCP
-  #     port: 80
-  #   - protocol: TCP
-  #     port: 8080
-  
-  # For now, allow all egress to external endpoints (can be restricted with IPBlock above)
   - to: []
     ports:
     - protocol: TCP
