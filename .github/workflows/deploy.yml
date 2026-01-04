@@ -195,6 +195,33 @@ jobs:
           kubectl apply --context=$HAPROXY_CTX -f k8s/haproxy/deployment.yaml
           kubectl apply --context=$HAPROXY_CTX -f k8s/haproxy/service.yaml
 
+      - name: Deploy network policies
+        run: |
+          HOT_CTX="${{ steps.detect-contexts.outputs.hot_context }}"
+          STANDBY_CTX="${{ steps.detect-contexts.outputs.standby_context }}"
+          HAPROXY_CTX="${{ steps.detect-contexts.outputs.haproxy_context }}"
+          
+          echo "🔒 Deploying network policies..."
+          
+          # Deploy network policies for hot cluster
+          kubectl apply --context=$HOT_CTX -f k8s/cluster-hot/network-policy.yaml
+          echo "✅ Network policy applied to hot cluster"
+          
+          # Deploy network policies for standby cluster
+          kubectl apply --context=$STANDBY_CTX -f k8s/cluster-standby/network-policy.yaml
+          echo "✅ Network policy applied to standby cluster"
+          
+          # Deploy network policy for HAProxy
+          kubectl apply --context=$HAPROXY_CTX -f k8s/haproxy/network-policy.yaml
+          echo "✅ Network policy applied to HAProxy"
+          
+          # Verify network policies are applied
+          echo ""
+          echo "Network policies status:"
+          kubectl get networkpolicies --context=$HOT_CTX -n default || echo "No network policies in hot cluster"
+          kubectl get networkpolicies --context=$STANDBY_CTX -n default || echo "No network policies in standby cluster"
+          kubectl get networkpolicies --context=$HAPROXY_CTX -n default || echo "No network policies in HAProxy cluster"
+
       - name: Wait for deployments
         run: |
           HOT_CTX="${{ steps.detect-contexts.outputs.hot_context }}"

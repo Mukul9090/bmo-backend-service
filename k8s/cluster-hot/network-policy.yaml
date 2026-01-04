@@ -12,6 +12,15 @@ spec:
   - Egress
   
   ingress:
+  # Allow traffic from HAProxy (load balancer)
+  - from:
+    - podSelector:
+        matchLabels:
+          app: haproxy
+    ports:
+    - protocol: TCP
+      port: 8080
+  
   # Allow traffic from Prometheus (for metrics)
   - from:
     - namespaceSelector:
@@ -23,10 +32,6 @@ spec:
     ports:
     - protocol: TCP
       port: 8080
-  
-  # Allow traffic from external sources (HAProxy will connect via LoadBalancer/NodePort)
-  # Note: Network policies cannot directly control external traffic to LoadBalancer/NodePort services
-  # This policy mainly controls pod-to-pod communication within the cluster
   
   egress:
   # Allow DNS queries (required for service discovery)
