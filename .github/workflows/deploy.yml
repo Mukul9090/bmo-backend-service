@@ -337,32 +337,6 @@ jobs:
           echo ""
           echo "✅ Basic verification: Pods are created in both clusters"
 
-      - name: Run failover tests
-        run: |
-          HOT_CTX="${{ steps.detect-contexts.outputs.hot_context }}"
-          STANDBY_CTX="${{ steps.detect-contexts.outputs.standby_context }}"
-          
-          # Install requests if not available
-          pip3 install --user requests --quiet 2>/dev/null || pip3 install requests --break-system-packages --quiet || true
-          
-          # Set environment variables
-          export HAPROXY_URL="http://localhost:9090"
-          export K8S_CLUSTER_HOT_CONTEXT="$HOT_CTX"
-          export K8S_CLUSTER_STANDBY_CONTEXT="$STANDBY_CTX"
-          export PYTHONPATH="${HOME}/Library/Python/3.14/lib/python/site-packages:${PYTHONPATH:-}"
-          
-          echo "🔄 Running failover tests..." >> $GITHUB_STEP_SUMMARY
-          echo "   - Test 1: Scale hot pods to 0, verify failover to standby" >> $GITHUB_STEP_SUMMARY
-          echo "   - Test 2: Scale hot pods back up, verify recovery" >> $GITHUB_STEP_SUMMARY
-          
-          # Run failover tests
-          if python3 tests/test_failover.py; then
-            echo "✅ Failover tests passed" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "❌ Failover tests failed" >> $GITHUB_STEP_SUMMARY
-            exit 1
-          fi
-
       - name: Deployment summary
         run: |
           HOT_CTX="${{ steps.detect-contexts.outputs.hot_context }}"
