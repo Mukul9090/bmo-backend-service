@@ -57,44 +57,97 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Detect cluster contexts
+        id: detect-contexts
+        run: |
+          # Get available contexts
+          AVAILABLE_CONTEXTS=$(kubectl config get-contexts -o name 2>/dev/null || echo "")
+          CURRENT_CONTEXT=$(kubectl config current-context 2>/dev/null || echo "")
+          
+          echo "Available contexts: $AVAILABLE_CONTEXTS"
+          echo "Current context: $CURRENT_CONTEXT"
+          
+          # Check if specified contexts exist, otherwise use current context
+          if kubectl config get-contexts ${{ env.K8S_CLUSTER_HOT_CONTEXT }} &>/dev/null; then
+            HOT_CTX="${{ env.K8S_CLUSTER_HOT_CONTEXT }}"
+            echo "✅ Using hot context: $HOT_CTX"
+          else
+            HOT_CTX="${CURRENT_CONTEXT:-minikube}"
+            echo "⚠️  Hot context '${{ env.K8S_CLUSTER_HOT_CONTEXT }}' not found, using: $HOT_CTX"
+          fi
+          
+          if kubectl config get-contexts ${{ env.K8S_CLUSTER_STANDBY_CONTEXT }} &>/dev/null; then
+            STANDBY_CTX="${{ env.K8S_CLUSTER_STANDBY_CONTEXT }}"
+            echo "✅ Using standby context: $STANDBY_CTX"
+          else
+            STANDBY_CTX="${CURRENT_CONTEXT:-minikube}"
+            echo "⚠️  Standby context '${{ env.K8S_CLUSTER_STANDBY_CONTEXT }}' not found, using: $STANDBY_CTX"
+          fi
+          
+          if kubectl config get-contexts ${{ env.HAPROXY_CLUSTER_CONTEXT }} &>/dev/null; then
+            HAPROXY_CTX="${{ env.HAPROXY_CLUSTER_CONTEXT }}"
+            echo "✅ Using HAProxy context: $HAPROXY_CTX"
+          else
+            HAPROXY_CTX="${CURRENT_CONTEXT:-minikube}"
+            echo "⚠️  HAProxy context '${{ env.HAPROXY_CLUSTER_CONTEXT }}' not found, using: $HAPROXY_CTX"
+          fi
+          
+          echo "hot_context=$HOT_CTX" >> $GITHUB_OUTPUT
+          echo "standby_context=$STANDBY_CTX" >> $GITHUB_OUTPUT
+          echo "haproxy_context=$HAPROXY_CTX" >> $GITHUB_OUTPUT
+
       - name: Deploy to clusters
         run: |
+          HOT_CTX="${{ steps.detect-contexts.outputs.hot_context }}"
+          STANDBY_CTX="${{ steps.detect-contexts.outputs.standby_context }}"
+          HAPROXY_CTX="${{ steps.detect-contexts.outputs.haproxy_context }}"
+          
           # Deploy hot cluster
-          kubectl create configmap backend-config --from-literal=CLUSTER_ROLE=hot --context=${{ env.K8S_CLUSTER_HOT_CONTEXT }} -n default --dry-run=client -o yaml | kubectl apply --context=${{ env.K8S_CLUSTER_HOT_CONTEXT }} -f -
-          sed "s|image: ${{ env.DOCKER_IMAGE }}$|image: ${{ env.DOCKER_IMAGE }}:${{ env.DOCKER_TAG }}|" k8s/cluster-hot/deployment.yaml | kubectl apply --context=${{ env.K8S_CLUSTER_HOT_CONTEXT }} -f -
-          kubectl apply --context=${{ env.K8S_CLUSTER_HOT_CONTEXT }} -f k8s/cluster-hot/service.yaml
+          kubectl create configmap backend-config --from-literal=CLUSTER_ROLE=hot --context=$HOT_CTX -n default --dry-run=client -o yaml | kubectl apply --context=$HOT_CTX -f -
+          sed "s|image: ${{ env.DOCKER_IMAGE }}$|image: ${{ env.DOCKER_IMAGE }}:${{ env.DOCKER_TAG }}|" k8s/cluster-hot/deployment.yaml | kubectl apply --context=$HOT_CTX -f -
+          kubectl apply --context=$HOT_CTX -f k8s/cluster-hot/service.yaml
           
           # Deploy standby cluster
-          kubectl create configmap backend-config --from-literal=CLUSTER_ROLE=standby --context=${{ env.K8S_CLUSTER_STANDBY_CONTEXT }} -n default --dry-run=client -o yaml | kubectl apply --context=${{ env.K8S_CLUSTER_STANDBY_CONTEXT }} -f -
-          sed "s|image: ${{ env.DOCKER_IMAGE }}$|image: ${{ env.DOCKER_IMAGE }}:${{ env.DOCKER_TAG }}|" k8s/cluster-standby/deployment.yaml | kubectl apply --context=${{ env.K8S_CLUSTER_STANDBY_CONTEXT }} -f -
-          kubectl apply --context=${{ env.K8S_CLUSTER_STANDBY_CONTEXT }} -f k8s/cluster-standby/service.yaml
+          kubectl create configmap backend-config --from-literal=CLUSTER_ROLE=standby --context=$STANDBY_CTX -n default --dry-run=client -o yaml | kubectl apply --context=$STANDBY_CTX -f -
+          sed "s|image: ${{ env.DOCKER_IMAGE }}$|image: ${{ env.DOCKER_IMAGE }}:${{ env.DOCKER_TAG }}|" k8s/cluster-standby/deployment.yaml | kubectl apply --context=$STANDBY_CTX -f -
+          kubectl apply --context=$STANDBY_CTX -f k8s/cluster-standby/service.yaml
           
           # Get external IPs
           sleep 10
-          HOT_IP=$(kubectl get svc backend-service --context=${{ env.K8S_CLUSTER_HOT_CONTEXT }} -n default -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || kubectl get nodes --context=${{ env.K8S_CLUSTER_HOT_CONTEXT }} -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null || echo "localhost")
-          STANDBY_IP=$(kubectl get svc backend-service --context=${{ env.K8S_CLUSTER_STANDBY_CONTEXT }} -n default -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || kubectl get nodes --context=${{ env.K8S_CLUSTER_STANDBY_CONTEXT }} -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null || echo "localhost")
+          HOT_IP=$(kubectl get svc backend-service --context=$HOT_CTX -n default -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || kubectl get nodes --context=$HOT_CTX -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null || echo "localhost")
+          STANDBY_IP=$(kubectl get svc backend-service --context=$STANDBY_CTX -n default -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || kubectl get nodes --context=$STANDBY_CTX -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null || echo "localhost")
           
           # Update and deploy HAProxy
-          sed "s|<HOT_CLUSTER_EXTERNAL_IP>|${HOT_IP}:80|g" k8s/haproxy/configmap.yaml | sed "s|<STANDBY_CLUSTER_EXTERNAL_IP>|${STANDBY_IP}:80|g" | kubectl apply --context=${{ env.HAPROXY_CLUSTER_CONTEXT }} -f -
-          kubectl apply --context=${{ env.HAPROXY_CLUSTER_CONTEXT }} -f k8s/haproxy/deployment.yaml
-          kubectl apply --context=${{ env.HAPROXY_CLUSTER_CONTEXT }} -f k8s/haproxy/service.yaml
+          sed "s|<HOT_CLUSTER_EXTERNAL_IP>|${HOT_IP}:80|g" k8s/haproxy/configmap.yaml | sed "s|<STANDBY_CLUSTER_EXTERNAL_IP>|${STANDBY_IP}:80|g" | kubectl apply --context=$HAPROXY_CTX -f -
+          kubectl apply --context=$HAPROXY_CTX -f k8s/haproxy/deployment.yaml
+          kubectl apply --context=$HAPROXY_CTX -f k8s/haproxy/service.yaml
 
       - name: Wait for deployments
         run: |
-          kubectl wait --for=condition=available --timeout=300s deployment/backend-service --context=${{ env.K8S_CLUSTER_HOT_CONTEXT }} -n default || true
-          kubectl wait --for=condition=available --timeout=300s deployment/backend-service --context=${{ env.K8S_CLUSTER_STANDBY_CONTEXT }} -n default || true
-          kubectl wait --for=condition=available --timeout=300s deployment/haproxy --context=${{ env.HAPROXY_CLUSTER_CONTEXT }} || true
+          HOT_CTX="${{ steps.detect-contexts.outputs.hot_context }}"
+          STANDBY_CTX="${{ steps.detect-contexts.outputs.standby_context }}"
+          HAPROXY_CTX="${{ steps.detect-contexts.outputs.haproxy_context }}"
+          
+          kubectl wait --for=condition=available --timeout=300s deployment/backend-service --context=$HOT_CTX -n default || true
+          kubectl wait --for=condition=available --timeout=300s deployment/backend-service --context=$STANDBY_CTX -n default || true
+          kubectl wait --for=condition=available --timeout=300s deployment/haproxy --context=$HAPROXY_CTX || true
 
       - name: Setup HAProxy port-forward
         run: |
+          HAPROXY_CTX="${{ steps.detect-contexts.outputs.haproxy_context }}"
           pkill -f "kubectl port-forward.*haproxy" || true
-          nohup kubectl port-forward --context=${{ env.HAPROXY_CLUSTER_CONTEXT }} svc/haproxy 9090:9090 > /tmp/haproxy-portforward.log 2>&1 &
+          nohup kubectl port-forward --context=$HAPROXY_CTX svc/haproxy 9090:9090 > /tmp/haproxy-portforward.log 2>&1 &
           sleep 3
           echo "✅ HAProxy accessible at http://localhost:9090" >> $GITHUB_STEP_SUMMARY
 
       - name: Deployment summary
         run: |
+          HOT_CTX="${{ steps.detect-contexts.outputs.hot_context }}"
+          STANDBY_CTX="${{ steps.detect-contexts.outputs.standby_context }}"
+          HAPROXY_CTX="${{ steps.detect-contexts.outputs.haproxy_context }}"
+          
           echo "## 🚀 Deployment Summary" >> $GITHUB_STEP_SUMMARY
-          kubectl get pods --context=${{ env.K8S_CLUSTER_HOT_CONTEXT }} -n default -l app=backend-service >> $GITHUB_STEP_SUMMARY || true
-          kubectl get pods --context=${{ env.K8S_CLUSTER_STANDBY_CONTEXT }} -n default -l app=backend-service >> $GITHUB_STEP_SUMMARY || true
-          kubectl get pods --context=${{ env.HAPROXY_CLUSTER_CONTEXT }} -l app=haproxy >> $GITHUB_STEP_SUMMARY || true
+          echo "Using contexts - Hot: $HOT_CTX, Standby: $STANDBY_CTX, HAProxy: $HAPROXY_CTX" >> $GITHUB_STEP_SUMMARY
+          kubectl get pods --context=$HOT_CTX -n default -l app=backend-service >> $GITHUB_STEP_SUMMARY || true
+          kubectl get pods --context=$STANDBY_CTX -n default -l app=backend-service >> $GITHUB_STEP_SUMMARY || true
+          kubectl get pods --context=$HAPROXY_CTX -l app=haproxy >> $GITHUB_STEP_SUMMARY || true
