@@ -1,7 +1,7 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: backend-service
+  name: backend-service-hot
   namespace: default
   labels:
     app: backend-service
@@ -13,7 +13,8 @@ spec:
   # externalIPs:
   #   - <HOT_CLUSTER_NODE_IP>
   selector:
-    app: backend-service
+    app: backend-service-hot
+    cluster: hot
   ports:
     - name: http
       port: 80
