@@ -104,14 +104,18 @@ jobs:
           
           echo "🧹 Cleaning existing deployments..."
           
-          # Clean hot cluster
+          # Clean hot cluster (handle both service names for same-cluster scenario)
           kubectl delete deployment backend-service --context=$HOT_CTX -n default --ignore-not-found=true --timeout=10s || true
+          kubectl delete deployment backend-service-hot --context=$HOT_CTX -n default --ignore-not-found=true --timeout=10s || true
           kubectl delete service backend-service --context=$HOT_CTX -n default --ignore-not-found=true --timeout=10s || true
+          kubectl delete service backend-service-hot --context=$HOT_CTX -n default --ignore-not-found=true --timeout=10s || true
           kubectl delete configmap backend-config --context=$HOT_CTX -n default --ignore-not-found=true --timeout=10s || true
           
-          # Clean standby cluster
+          # Clean standby cluster (handle both service names for same-cluster scenario)
           kubectl delete deployment backend-service --context=$STANDBY_CTX -n default --ignore-not-found=true --timeout=10s || true
+          kubectl delete deployment backend-service-standby --context=$STANDBY_CTX -n default --ignore-not-found=true --timeout=10s || true
           kubectl delete service backend-service --context=$STANDBY_CTX -n default --ignore-not-found=true --timeout=10s || true
+          kubectl delete service backend-service-standby --context=$STANDBY_CTX -n default --ignore-not-found=true --timeout=10s || true
           kubectl delete configmap backend-config --context=$STANDBY_CTX -n default --ignore-not-found=true --timeout=10s || true
           
           # Clean HAProxy
@@ -129,26 +133,28 @@ jobs:
           HAPROXY_CTX="${{ steps.detect-contexts.outputs.haproxy_context }}"
           
           # Function to get backend endpoint with proper fallback logic
+          # Debug messages go to stderr (>&2), only endpoint goes to stdout
           get_backend_endpoint() {
             local CTX=$1
             local CLUSTER_TYPE=$2
+            local SERVICE_NAME=$3
             local NAMESPACE="default"
             local ENDPOINT=""
             
-            echo "🔍 Detecting endpoint for $CLUSTER_TYPE cluster (context: $CTX)..."
+            echo "🔍 Detecting endpoint for $CLUSTER_TYPE cluster (context: $CTX)..." >&2
             
             # Step 1: Try LoadBalancer external IP
-            ENDPOINT=$(kubectl get svc backend-service --context=$CTX -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
+            ENDPOINT=$(kubectl get svc $SERVICE_NAME --context=$CTX -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
             if [ -n "$ENDPOINT" ]; then
-              echo "✅ Found LoadBalancer IP: $ENDPOINT"
+              echo "✅ Found LoadBalancer IP: $ENDPOINT" >&2
               echo "$ENDPOINT"
               return 0
             fi
             
             # Step 2: Try LoadBalancer hostname (for cloud providers)
-            ENDPOINT=$(kubectl get svc backend-service --context=$CTX -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
+            ENDPOINT=$(kubectl get svc $SERVICE_NAME --context=$CTX -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
             if [ -n "$ENDPOINT" ]; then
-              echo "✅ Found LoadBalancer hostname: $ENDPOINT"
+              echo "✅ Found LoadBalancer hostname: $ENDPOINT" >&2
               echo "$ENDPOINT"
               return 0
             fi
@@ -160,74 +166,122 @@ jobs:
             fi
             if [ -n "$NODE_IP" ]; then
               # Get NodePort if service is NodePort type
-              NODEPORT=$(kubectl get svc backend-service --context=$CTX -n $NAMESPACE -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null || echo "")
+              NODEPORT=$(kubectl get svc $SERVICE_NAME --context=$CTX -n $NAMESPACE -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null || echo "")
               if [ -n "$NODEPORT" ]; then
-                echo "✅ Found NodePort: $NODE_IP:$NODEPORT"
+                echo "✅ Found NodePort: $NODE_IP:$NODEPORT" >&2
                 echo "$NODE_IP:$NODEPORT"
                 return 0
               fi
               # If LoadBalancer type but no external IP, use node IP with service port
-              echo "✅ Using node IP with service port: $NODE_IP"
+              echo "✅ Using node IP with service port: $NODE_IP" >&2
               echo "$NODE_IP"
               return 0
             fi
             
             # Step 4: Fallback to internal DNS (correct namespace: default)
             # This works when HAProxy is in the same cluster
-            ENDPOINT="backend-service.${NAMESPACE}.svc.cluster.local"
-            echo "⚠️  No external IP found, using internal DNS: $ENDPOINT"
+            ENDPOINT="$SERVICE_NAME.${NAMESPACE}.svc.cluster.local"
+            echo "⚠️  No external IP found, using internal DNS: $ENDPOINT" >&2
             echo "$ENDPOINT"
             return 0
           }
           
+          # Determine service names based on cluster configuration
+          if [ "$HOT_CTX" = "$STANDBY_CTX" ]; then
+            echo "⚠️  Same cluster detected - using different service names to avoid conflicts"
+            HOT_SERVICE_NAME="backend-service-hot"
+            STANDBY_SERVICE_NAME="backend-service-standby"
+            HOT_DEPLOYMENT_NAME="backend-service-hot"
+            STANDBY_DEPLOYMENT_NAME="backend-service-standby"
+          else
+            HOT_SERVICE_NAME="backend-service"
+            STANDBY_SERVICE_NAME="backend-service"
+            HOT_DEPLOYMENT_NAME="backend-service"
+            STANDBY_DEPLOYMENT_NAME="backend-service"
+          fi
+          
           # Deploy hot cluster
           echo "🚀 Deploying hot cluster..."
           kubectl create configmap backend-config --from-literal=CLUSTER_ROLE=hot --context=$HOT_CTX -n default --dry-run=client -o yaml | kubectl apply --context=$HOT_CTX -f -
-          sed "s|image: ${{ env.DOCKER_IMAGE }}$|image: ${{ env.DOCKER_IMAGE }}:${{ env.DOCKER_TAG }}|" k8s/cluster-hot/deployment.yaml | kubectl apply --context=$HOT_CTX -f -
-          kubectl apply --context=$HOT_CTX -f k8s/cluster-hot/service.yaml
+          
+          # Deploy hot deployment and service (modify names if same cluster)
+          if [ "$HOT_CTX" = "$STANDBY_CTX" ]; then
+            sed "s|image: ${{ env.DOCKER_IMAGE }}$|image: ${{ env.DOCKER_IMAGE }}:${{ env.DOCKER_TAG }}|" k8s/cluster-hot/deployment.yaml | \
+              sed "s|name: backend-service|name: $HOT_DEPLOYMENT_NAME|g" | \
+              sed "s|app: backend-service|app: backend-service-hot|g" | \
+              kubectl apply --context=$HOT_CTX -f -
+            cat k8s/cluster-hot/service.yaml | \
+              sed "s|name: backend-service|name: $HOT_SERVICE_NAME|g" | \
+              sed "s|app: backend-service|app: backend-service-hot|g" | \
+              sed "s|selector:|selector:\n    app: backend-service-hot|g" | \
+              kubectl apply --context=$HOT_CTX -f -
+          else
+            sed "s|image: ${{ env.DOCKER_IMAGE }}$|image: ${{ env.DOCKER_IMAGE }}:${{ env.DOCKER_TAG }}|" k8s/cluster-hot/deployment.yaml | kubectl apply --context=$HOT_CTX -f -
+            kubectl apply --context=$HOT_CTX -f k8s/cluster-hot/service.yaml
+          fi
           
           # Wait for hot cluster to be ready
           echo "⏳ Waiting for hot cluster to be ready..."
-          kubectl wait --for=condition=available --timeout=120s deployment/backend-service --context=$HOT_CTX -n default || echo "⚠️  Hot cluster deployment timeout (continuing anyway)"
+          kubectl wait --for=condition=available --timeout=120s deployment/$HOT_DEPLOYMENT_NAME --context=$HOT_CTX -n default || echo "⚠️  Hot cluster deployment timeout (continuing anyway)"
           sleep 5
           
           # Deploy standby cluster
           echo "🚀 Deploying standby cluster..."
           kubectl create configmap backend-config --from-literal=CLUSTER_ROLE=standby --context=$STANDBY_CTX -n default --dry-run=client -o yaml | kubectl apply --context=$STANDBY_CTX -f -
-          sed "s|image: ${{ env.DOCKER_IMAGE }}$|image: ${{ env.DOCKER_IMAGE }}:${{ env.DOCKER_TAG }}|" k8s/cluster-standby/deployment.yaml | kubectl apply --context=$STANDBY_CTX -f -
-          kubectl apply --context=$STANDBY_CTX -f k8s/cluster-standby/service.yaml
           
-          # Handle same-context scenario (both in same cluster)
+          # Deploy standby deployment and service (modify names if same cluster)
           if [ "$HOT_CTX" = "$STANDBY_CTX" ]; then
-            echo "⚠️  Same cluster detected - both services share the same context"
-            echo "   Note: In same cluster, both deployments use same service name"
-            echo "   HAProxy will route based on pod health and labels"
+            sed "s|image: ${{ env.DOCKER_IMAGE }}$|image: ${{ env.DOCKER_IMAGE }}:${{ env.DOCKER_TAG }}|" k8s/cluster-standby/deployment.yaml | \
+              sed "s|name: backend-service|name: $STANDBY_DEPLOYMENT_NAME|g" | \
+              sed "s|app: backend-service|app: backend-service-standby|g" | \
+              kubectl apply --context=$STANDBY_CTX -f -
+            cat k8s/cluster-standby/service.yaml | \
+              sed "s|name: backend-service|name: $STANDBY_SERVICE_NAME|g" | \
+              sed "s|app: backend-service|app: backend-service-standby|g" | \
+              sed "s|selector:|selector:\n    app: backend-service-standby|g" | \
+              kubectl apply --context=$STANDBY_CTX -f -
+          else
+            sed "s|image: ${{ env.DOCKER_IMAGE }}$|image: ${{ env.DOCKER_IMAGE }}:${{ env.DOCKER_TAG }}|" k8s/cluster-standby/deployment.yaml | kubectl apply --context=$STANDBY_CTX -f -
+            kubectl apply --context=$STANDBY_CTX -f k8s/cluster-standby/service.yaml
           fi
           
           # Wait for standby cluster to be ready
           echo "⏳ Waiting for standby cluster to be ready..."
-          kubectl wait --for=condition=available --timeout=120s deployment/backend-service --context=$STANDBY_CTX -n default || echo "⚠️  Standby cluster deployment timeout (continuing anyway)"
+          kubectl wait --for=condition=available --timeout=120s deployment/$STANDBY_DEPLOYMENT_NAME --context=$STANDBY_CTX -n default || echo "⚠️  Standby cluster deployment timeout (continuing anyway)"
           sleep 5
           
-          # Wait for services to be ready
-          echo "⏳ Waiting for services to be ready..."
-          kubectl wait --for=condition=ready --timeout=60s service/backend-service --context=$HOT_CTX -n default || echo "⚠️  Hot service not ready (continuing anyway)"
-          kubectl wait --for=condition=ready --timeout=60s service/backend-service --context=$STANDBY_CTX -n default || echo "⚠️  Standby service not ready (continuing anyway)"
-          sleep 5
+          # Wait for services to exist (services don't have "ready" condition in Kubernetes)
+          echo "⏳ Waiting for services to be created..."
+          for i in {1..30}; do
+            if kubectl get svc $HOT_SERVICE_NAME --context=$HOT_CTX -n default &>/dev/null && \
+               kubectl get svc $STANDBY_SERVICE_NAME --context=$STANDBY_CTX -n default &>/dev/null; then
+              echo "✅ Services created"
+              break
+            fi
+            if [ $i -eq 30 ]; then
+              echo "⚠️  Services not found after 30 attempts (continuing anyway)"
+            fi
+            sleep 2
+          done
+          sleep 3
           
           # Get backend endpoints using production-ready function
-          HOT_ENDPOINT=$(get_backend_endpoint "$HOT_CTX" "hot")
-          STANDBY_ENDPOINT=$(get_backend_endpoint "$STANDBY_CTX" "standby")
+          HOT_ENDPOINT=$(get_backend_endpoint "$HOT_CTX" "hot" "$HOT_SERVICE_NAME")
+          STANDBY_ENDPOINT=$(get_backend_endpoint "$STANDBY_CTX" "standby" "$STANDBY_SERVICE_NAME")
+          
+          # Clean endpoints (strip newlines, whitespace, and debug output)
+          HOT_ENDPOINT=$(echo "$HOT_ENDPOINT" | tr -d '\n\r' | xargs)
+          STANDBY_ENDPOINT=$(echo "$STANDBY_ENDPOINT" | tr -d '\n\r' | xargs)
           
           # Validate endpoints
           if [ -z "$HOT_ENDPOINT" ] || [ "$HOT_ENDPOINT" = "localhost" ]; then
             echo "❌ Invalid hot endpoint, using internal DNS fallback"
-            HOT_ENDPOINT="backend-service.default.svc.cluster.local"
+            HOT_ENDPOINT="$HOT_SERVICE_NAME.default.svc.cluster.local"
           fi
           
           if [ -z "$STANDBY_ENDPOINT" ] || [ "$STANDBY_ENDPOINT" = "localhost" ]; then
             echo "❌ Invalid standby endpoint, using internal DNS fallback"
-            STANDBY_ENDPOINT="backend-service.default.svc.cluster.local"
+            STANDBY_ENDPOINT="$STANDBY_SERVICE_NAME.default.svc.cluster.local"
           fi
           
           # Format endpoints for HAProxy (add port if not present)
@@ -284,9 +338,12 @@ jobs:
           
           # Deploy HAProxy with validated configuration
           echo "🚀 Deploying HAProxy..."
+          # Use a temporary file to avoid sed issues with special characters
+          TEMP_CONFIG=$(mktemp)
           sed "s|<HOT_CLUSTER_EXTERNAL_IP>|${HOT_SERVER}|g" k8s/haproxy/configmap.yaml | \
-            sed "s|<STANDBY_CLUSTER_EXTERNAL_IP>|${STANDBY_SERVER}|g" | \
-            kubectl apply --context=$HAPROXY_CTX -f -
+            sed "s|<STANDBY_CLUSTER_EXTERNAL_IP>|${STANDBY_SERVER}|g" > "$TEMP_CONFIG"
+          kubectl apply --context=$HAPROXY_CTX -f "$TEMP_CONFIG"
+          rm -f "$TEMP_CONFIG"
           kubectl apply --context=$HAPROXY_CTX -f k8s/haproxy/deployment.yaml
           kubectl apply --context=$HAPROXY_CTX -f k8s/haproxy/service.yaml
           
