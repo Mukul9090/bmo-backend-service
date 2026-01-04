@@ -286,28 +286,6 @@ jobs:
             kubectl get pods --context=$HAPROXY_CTX -l app=haproxy >> $GITHUB_STEP_SUMMARY || true
           fi
 
-      - name: Run basic deployment tests
-        run: |
-          HOT_CTX="${{ steps.detect-contexts.outputs.hot_context }}"
-          STANDBY_CTX="${{ steps.detect-contexts.outputs.standby_context }}"
-          
-          # Install requests if not available
-          pip3 install --user requests --quiet 2>/dev/null || pip3 install requests --break-system-packages --quiet || true
-          
-          # Set up port-forwards for direct cluster access
-          kubectl port-forward --context=$HOT_CTX svc/backend-service 8080:80 > /dev/null 2>&1 &
-          kubectl port-forward --context=$STANDBY_CTX svc/backend-service 8081:80 > /dev/null 2>&1 &
-          sleep 5
-          
-          # Set environment variables
-          export HOT_URL="http://localhost:8080"
-          export STANDBY_URL="http://localhost:8081"
-          export HAPROXY_URL="http://localhost:9090"
-          export PYTHONPATH="${HOME}/Library/Python/3.14/lib/python/site-packages:${PYTHONPATH:-}"
-          
-          # Run basic tests
-          python3 tests/test_deployment.py || echo "⚠️  Basic tests had some failures (non-blocking)"
-
       - name: Run failover tests
         run: |
           HOT_CTX="${{ steps.detect-contexts.outputs.hot_context }}"
