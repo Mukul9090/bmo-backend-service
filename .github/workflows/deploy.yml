@@ -96,6 +96,31 @@ jobs:
           echo "standby_context=$STANDBY_CTX" >> $GITHUB_OUTPUT
           echo "haproxy_context=$HAPROXY_CTX" >> $GITHUB_OUTPUT
 
+      - name: Clean existing deployments
+        run: |
+          HOT_CTX="${{ steps.detect-contexts.outputs.hot_context }}"
+          STANDBY_CTX="${{ steps.detect-contexts.outputs.standby_context }}"
+          HAPROXY_CTX="${{ steps.detect-contexts.outputs.haproxy_context }}"
+          
+          echo "🧹 Cleaning existing deployments..."
+          
+          # Clean hot cluster
+          kubectl delete deployment backend-service --context=$HOT_CTX -n default --ignore-not-found=true --timeout=10s || true
+          kubectl delete service backend-service --context=$HOT_CTX -n default --ignore-not-found=true --timeout=10s || true
+          kubectl delete configmap backend-config --context=$HOT_CTX -n default --ignore-not-found=true --timeout=10s || true
+          
+          # Clean standby cluster
+          kubectl delete deployment backend-service --context=$STANDBY_CTX -n default --ignore-not-found=true --timeout=10s || true
+          kubectl delete service backend-service --context=$STANDBY_CTX -n default --ignore-not-found=true --timeout=10s || true
+          kubectl delete configmap backend-config --context=$STANDBY_CTX -n default --ignore-not-found=true --timeout=10s || true
+          
+          # Clean HAProxy
+          kubectl delete deployment haproxy --context=$HAPROXY_CTX --ignore-not-found=true --timeout=10s || true
+          kubectl delete service haproxy --context=$HAPROXY_CTX --ignore-not-found=true --timeout=10s || true
+          kubectl delete configmap haproxy-config --context=$HAPROXY_CTX --ignore-not-found=true --timeout=10s || true
+          
+          echo "✅ Cleanup complete"
+
       - name: Deploy to clusters
         run: |
           HOT_CTX="${{ steps.detect-contexts.outputs.hot_context }}"
