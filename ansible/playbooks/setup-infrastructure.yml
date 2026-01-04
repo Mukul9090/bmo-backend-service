@@ -258,6 +258,29 @@
         - { key: 'net.ipv4.ip_forward', value: '1' }
       when: ansible_os_family == "Debian"
     
+    # ========== Additional Network Configuration ==========
+    - name: Make sysctl settings persistent
+      lineinfile:
+        path: /etc/sysctl.conf
+        regexp: "^{{ item.key }}"
+        line: "{{ item.key }} = {{ item.value }}"
+        state: present
+      loop:
+        - { key: 'net.bridge.bridge-nf-call-iptables', value: '1' }
+        - { key: 'net.bridge.bridge-nf-call-ip6tables', value: '1' }
+        - { key: 'net.ipv4.ip_forward', value: '1' }
+      when: ansible_os_family == "Debian"
+    
+    - name: Load kernel modules persistently
+      lineinfile:
+        path: /etc/modules-load.d/k8s.conf
+        line: "{{ item }}"
+        create: yes
+      loop:
+        - br_netfilter
+        - overlay
+      when: ansible_os_family == "Debian"
+    
     - name: Load kernel modules (Linux)
       modprobe:
         name: "{{ item }}"
@@ -266,6 +289,97 @@
         - br_netfilter
         - overlay
       when: ansible_os_family == "Debian"
+    
+    # ========== Firewall Configuration ==========
+    - name: Install UFW firewall
+      apt:
+        name: ufw
+        state: present
+      when: ansible_os_family == "Debian"
+    
+    - name: Set UFW default policies
+      ufw:
+        direction: "{{ item.direction }}"
+        policy: "{{ item.policy }}"
+      loop:
+        - { direction: 'incoming', policy: 'deny' }
+        - { direction: 'outgoing', policy: 'allow' }
+        - { direction: 'routed', policy: 'allow' }
+      when: ansible_os_family == "Debian"
+    
+    - name: Allow SSH
+      ufw:
+        rule: allow
+        port: '22'
+        proto: tcp
+      when: ansible_os_family == "Debian"
+    
+    - name: Allow Kubernetes API server
+      ufw:
+        rule: allow
+        port: '6443'
+        proto: tcp
+      when: ansible_os_family == "Debian"
+    
+    - name: Allow Kubelet API
+      ufw:
+        rule: allow
+        port: '10250'
+        proto: tcp
+      when: ansible_os_family == "Debian"
+    
+    - name: Allow Kube-scheduler
+      ufw:
+        rule: allow
+        port: '10259'
+        proto: tcp
+      when: ansible_os_family == "Debian"
+    
+    - name: Allow Kube-controller-manager
+      ufw:
+        rule: allow
+        port: '10257'
+        proto: tcp
+      when: ansible_os_family == "Debian"
+    
+    - name: Allow etcd client API
+      ufw:
+        rule: allow
+        port: '2379'
+        proto: tcp
+      when: ansible_os_family == "Debian"
+    
+    - name: Allow etcd peer API
+      ufw:
+        rule: allow
+        port: '2380'
+        proto: tcp
+      when: ansible_os_family == "Debian"
+    
+    - name: Allow NodePort range (30000-32767)
+      ufw:
+        rule: allow
+        port: '30000:32767'
+        proto: tcp
+      when: ansible_os_family == "Debian"
+    
+    - name: Enable UFW firewall
+      ufw:
+        state: enabled
+      when: ansible_os_family == "Debian"
+    
+    - name: Verify UFW status
+      command: ufw status verbose
+      register: ufw_status
+      changed_when: false
+      when: ansible_os_family == "Debian"
+    
+    - name: Display firewall status
+      debug:
+        msg: "{{ ufw_status.stdout_lines }}"
+      when: 
+        - ufw_status is defined
+        - ufw_status.stdout_lines is defined
     
     - name: Disable swap (Linux)
       command: swapoff -a
@@ -285,6 +399,117 @@
         update_cache: yes
       when: ansible_os_family == "Debian"
       ignore_errors: yes
+    
+    # ========== Enhanced Security Patches ==========
+    - name: Install unattended-upgrades for automatic security patches
+      apt:
+        name: unattended-upgrades
+        state: present
+      when: ansible_os_family == "Debian"
+    
+    - name: Configure automatic security updates
+      copy:
+        content: |
+          APT::Periodic::Update-Package-Lists "1";
+          APT::Periodic::Unattended-Upgrade "1";
+          APT::Periodic::Download-Upgradeable-Packages "1";
+          APT::Periodic::AutocleanInterval "7";
+          Unattended-Upgrade::Automatic-Reboot "false";
+          Unattended-Upgrade::Remove-Unused-Kernel-Packages "true";
+          Unattended-Upgrade::Remove-Unused-Dependencies "true";
+        dest: /etc/apt/apt.conf.d/50unattended-upgrades
+      when: ansible_os_family == "Debian"
+    
+    - name: Configure which packages to auto-upgrade
+      copy:
+        content: |
+          Unattended-Upgrade::Allowed-Origins {
+              "${distro_id}:${distro_codename}-security";
+              "${distro_id}ESMApps:${distro_codename}-apps-security";
+          };
+          Unattended-Upgrade::Package-Blacklist {
+          };
+        dest: /etc/apt/apt.conf.d/50unattended-upgrades-security
+      when: ansible_os_family == "Debian"
+    
+    - name: Enable automatic security updates service
+      systemd:
+        name: unattended-upgrades
+        enabled: yes
+        state: started
+      when: ansible_os_family == "Debian"
+    
+    # ========== SSH Hardening ==========
+    - name: Backup SSH configuration
+      copy:
+        src: /etc/ssh/sshd_config
+        dest: /etc/ssh/sshd_config.backup
+        remote_src: yes
+      when: ansible_os_family == "Debian"
+      ignore_errors: yes
+    
+    - name: Disable root login via SSH
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PermitRootLogin'
+        line: 'PermitRootLogin no'
+        backup: yes
+      when: ansible_os_family == "Debian"
+      notify: restart sshd
+    
+    - name: Disable password authentication
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PasswordAuthentication'
+        line: 'PasswordAuthentication no'
+        backup: yes
+      when: ansible_os_family == "Debian"
+      notify: restart sshd
+    
+    - name: Enable public key authentication
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PubkeyAuthentication'
+        line: 'PubkeyAuthentication yes'
+        backup: yes
+      when: ansible_os_family == "Debian"
+      notify: restart sshd
+    
+    - name: Disable empty passwords
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PermitEmptyPasswords'
+        line: 'PermitEmptyPasswords no'
+        backup: yes
+      when: ansible_os_family == "Debian"
+      notify: restart sshd
+    
+    - name: Set SSH protocol version
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?Protocol'
+        line: 'Protocol 2'
+        backup: yes
+      when: ansible_os_family == "Debian"
+      notify: restart sshd
+    
+    - name: Set SSH idle timeout
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?ClientAliveInterval'
+        line: 'ClientAliveInterval 300'
+        backup: yes
+      when: ansible_os_family == "Debian"
+      notify: restart sshd
+    
+    - name: Set SSH max authentication attempts
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?MaxAuthTries'
+        line: 'MaxAuthTries 3'
+        backup: yes
+      when: ansible_os_family == "Debian"
+      notify: restart sshd
     
     - name: Enable and start kubelet service
       systemd:
@@ -538,6 +763,13 @@
       when: 
         - namespaces_check_final is defined
         - namespaces_check_final.stdout_lines is defined
+    
+  handlers:
+    - name: restart sshd
+      systemd:
+        name: sshd
+        state: restarted
+      when: ansible_os_family == "Debian"
     
     # ========== Summary Messages ==========
     - name: Summary - Infrastructure ready for GitHub Actions (Linux)

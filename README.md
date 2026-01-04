@@ -72,7 +72,7 @@ For detailed deployment guides, see [docs/](docs/).
 ## Testing
 
 ```bash
-# Run tests
+# Run unit tests
 pytest
 
 # Run with coverage
