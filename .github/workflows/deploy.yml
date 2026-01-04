@@ -286,6 +286,35 @@ jobs:
             kubectl get pods --context=$HAPROXY_CTX -l app=haproxy >> $GITHUB_STEP_SUMMARY || true
           fi
 
+      - name: Verify pods are created
+        run: |
+          HOT_CTX="${{ steps.detect-contexts.outputs.hot_context }}"
+          STANDBY_CTX="${{ steps.detect-contexts.outputs.standby_context }}"
+          
+          echo "Checking pods in hot cluster..."
+          HOT_PODS=$(kubectl get pods --context=$HOT_CTX -n default -l app=backend-service --no-headers 2>/dev/null | wc -l | tr -d ' ')
+          if [ "$HOT_PODS" -gt 0 ]; then
+            echo "✅ Hot cluster: $HOT_PODS pod(s) found"
+            kubectl get pods --context=$HOT_CTX -n default -l app=backend-service
+          else
+            echo "❌ Hot cluster: No pods found"
+            exit 1
+          fi
+          
+          echo ""
+          echo "Checking pods in standby cluster..."
+          STANDBY_PODS=$(kubectl get pods --context=$STANDBY_CTX -n default -l app=backend-service --no-headers 2>/dev/null | wc -l | tr -d ' ')
+          if [ "$STANDBY_PODS" -gt 0 ]; then
+            echo "✅ Standby cluster: $STANDBY_PODS pod(s) found"
+            kubectl get pods --context=$STANDBY_CTX -n default -l app=backend-service
+          else
+            echo "❌ Standby cluster: No pods found"
+            exit 1
+          fi
+          
+          echo ""
+          echo "✅ Basic verification: Pods are created in both clusters"
+
       - name: Run failover tests
         run: |
           HOT_CTX="${{ steps.detect-contexts.outputs.hot_context }}"
