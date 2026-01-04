@@ -258,25 +258,6 @@ jobs:
         run: |
           HAPROXY_CTX="${{ steps.detect-contexts.outputs.haproxy_context }}"
           
-<<<<<<< HEAD
-          # Wait for HAProxy service to be ready
-          echo "Waiting for HAProxy service..."
-          for i in {1..30}; do
-            if kubectl get svc haproxy --context=$HAPROXY_CTX &>/dev/null; then
-              echo "✅ HAProxy service exists"
-              break
-            fi
-            echo "Waiting for HAProxy service... ($i/30)"
-            sleep 2
-          done
-=======
-          # Verify HAProxy service exists
-          if ! kubectl get svc haproxy --context=$HAPROXY_CTX &>/dev/null; then
-            echo "❌ HAProxy service not found, skipping port-forward setup" >> $GITHUB_STEP_SUMMARY
-            echo "HAProxy service may not be deployed yet" >> $GITHUB_STEP_SUMMARY
-            exit 0
-          fi
->>>>>>> production-ready-fixes
           
           # Create bin directory if it doesn't exist
           mkdir -p ~/bin
@@ -301,45 +282,6 @@ jobs:
           # Start the persistent port-forward in background
           nohup ~/bin/keep-haproxy-forward.sh > /dev/null 2>&1 &
           
-<<<<<<< HEAD
-          # Wait and verify port-forward is working
-          echo "Waiting for port-forward to be ready..."
-          for i in {1..20}; do
-            if curl -s -f http://localhost:9090/healthz > /dev/null 2>&1; then
-              echo "✅ HAProxy port-forward is working"
-              break
-            fi
-            echo "Waiting for port-forward... ($i/20)"
-            sleep 2
-          done
-          
-          if curl -s -f http://localhost:9090/healthz > /dev/null 2>&1; then
-            echo "✅ Persistent HAProxy port-forward started successfully" >> $GITHUB_STEP_SUMMARY
-            echo "✅ HAProxy accessible at http://localhost:9090" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "⚠️  Port-forward may not be working - check HAProxy pod status" >> $GITHUB_STEP_SUMMARY
-            kubectl get pods --context=$HAPROXY_CTX -l app=haproxy >> $GITHUB_STEP_SUMMARY || true
-=======
-          # Wait and verify port-forward is actually working
-          echo "Waiting for HAProxy port-forward to be ready..."
-          PORT_READY=false
-          for i in {1..30}; do
-            if curl -s -f http://localhost:9090/healthz > /dev/null 2>&1; then
-              echo "✅ HAProxy port-forward is ready!" >> $GITHUB_STEP_SUMMARY
-              echo "✅ HAProxy accessible at http://localhost:9090" >> $GITHUB_STEP_SUMMARY
-              PORT_READY=true
-              break
-            fi
-            sleep 2
-          done
-          
-          if [ "$PORT_READY" = "false" ]; then
-            echo "⚠️  HAProxy port-forward not ready after 60 seconds" >> $GITHUB_STEP_SUMMARY
-            echo "Checking port-forward logs:" >> $GITHUB_STEP_SUMMARY
-            tail -20 /tmp/haproxy-portforward.log >> $GITHUB_STEP_SUMMARY 2>&1 || echo "No logs available" >> $GITHUB_STEP_SUMMARY
-            echo "Checking if HAProxy pod is running:" >> $GITHUB_STEP_SUMMARY
-            kubectl get pods --context=$HAPROXY_CTX -l app=haproxy >> $GITHUB_STEP_SUMMARY 2>&1 || true
->>>>>>> production-ready-fixes
           fi
 
       - name: Verify pods are created
@@ -347,104 +289,6 @@ jobs:
           HOT_CTX="${{ steps.detect-contexts.outputs.hot_context }}"
           STANDBY_CTX="${{ steps.detect-contexts.outputs.standby_context }}"
           
-<<<<<<< HEAD
-          # Check if test file exists
-          if [ ! -f "tests/test_deployment.py" ]; then
-            echo "⚠️  test_deployment.py not found, skipping basic tests" >> $GITHUB_STEP_SUMMARY
-            echo "This is expected if test files were removed for production" >> $GITHUB_STEP_SUMMARY
-            exit 0
-          fi
-          
-          # Install requests if not available
-          pip3 install --user requests --quiet 2>/dev/null || pip3 install requests --break-system-packages --quiet || true
-          
-          # Set up port-forwards for direct cluster access
-          kubectl port-forward --context=$HOT_CTX svc/backend-service 8080:80 > /dev/null 2>&1 &
-          kubectl port-forward --context=$STANDBY_CTX svc/backend-service 8081:80 > /dev/null 2>&1 &
-          
-          # Verify port-forwards are working
-          echo "Waiting for port-forwards to be ready..."
-          for i in {1..10}; do
-            if curl -s -f http://localhost:8080/healthz > /dev/null 2>&1 && \
-               curl -s -f http://localhost:8081/healthz > /dev/null 2>&1; then
-              echo "✅ Port-forwards ready"
-              break
-            fi
-            if [ $i -eq 10 ]; then
-              echo "⚠️  Port-forwards not ready after 10 attempts, continuing anyway"
-            fi
-            sleep 1
-          done
-          
-          # Set environment variables
-          export HOT_URL="http://localhost:8080"
-          export STANDBY_URL="http://localhost:8081"
-          export HAPROXY_URL="http://localhost:9090"
-          export PYTHONPATH="${HOME}/Library/Python/3.14/lib/python/site-packages:${PYTHONPATH:-}"
-          
-          # Run basic tests (non-blocking)
-          python3 tests/test_deployment.py || echo "⚠️  Basic tests had some failures (non-blocking)"
-
-      - name: Run failover tests
-        run: |
-          HOT_CTX="${{ steps.detect-contexts.outputs.hot_context }}"
-          STANDBY_CTX="${{ steps.detect-contexts.outputs.standby_context }}"
-          HAPROXY_CTX="${{ steps.detect-contexts.outputs.haproxy_context }}"
-          
-          # Check if HAProxy port-forward is working
-          if ! curl -s -f http://localhost:9090/healthz > /dev/null 2>&1; then
-            echo "❌ HAProxy not accessible at localhost:9090" >> $GITHUB_STEP_SUMMARY
-            echo "Skipping failover tests - HAProxy port-forward may not be ready" >> $GITHUB_STEP_SUMMARY
-            exit 0
-          fi
-          
-          # Check if test file exists
-          if [ ! -f "tests/test_failover.py" ]; then
-            echo "⚠️  test_failover.py not found, skipping failover tests" >> $GITHUB_STEP_SUMMARY
-            echo "This is expected if test files were removed for production" >> $GITHUB_STEP_SUMMARY
-            exit 0
-          fi
-          
-          # Install requests if not available
-          pip3 install --user requests --quiet 2>/dev/null || pip3 install requests --break-system-packages --quiet || true
-          
-          # Set environment variables
-          export HAPROXY_URL="http://localhost:9090"
-          export NAMESPACE_HOT="default"
-          export NAMESPACE_STANDBY="default"
-          export PYTHONPATH="${HOME}/Library/Python/3.14/lib/python/site-packages:${PYTHONPATH:-}"
-          
-          echo "🔄 Running failover tests..." >> $GITHUB_STEP_SUMMARY
-          echo "   - Test 1: Scale hot pods to 0, verify failover to standby" >> $GITHUB_STEP_SUMMARY
-          echo "   - Test 2: Scale hot pods back up, verify recovery" >> $GITHUB_STEP_SUMMARY
-          
-          # Run failover tests (non-blocking for now)
-          python3 tests/test_failover.py || echo "⚠️  Failover tests had some failures (non-blocking)"
-=======
-          echo "Checking pods in hot cluster..."
-          HOT_PODS=$(kubectl get pods --context=$HOT_CTX -n default -l 'app in (backend-service,backend-service-hot)' --no-headers 2>/dev/null | wc -l | tr -d ' ')
-          if [ "$HOT_PODS" -gt 0 ]; then
-            echo "✅ Hot cluster: $HOT_PODS pod(s) found"
-            kubectl get pods --context=$HOT_CTX -n default -l 'app in (backend-service,backend-service-hot)'
-          else
-            echo "❌ Hot cluster: No pods found"
-            exit 1
-          fi
-          
-          echo ""
-          echo "Checking pods in standby cluster..."
-          STANDBY_PODS=$(kubectl get pods --context=$STANDBY_CTX -n default -l app=backend-service --no-headers 2>/dev/null | wc -l | tr -d ' ')
-          if [ "$STANDBY_PODS" -gt 0 ]; then
-            echo "✅ Standby cluster: $STANDBY_PODS pod(s) found"
-            kubectl get pods --context=$STANDBY_CTX -n default -l app=backend-service
-          else
-            echo "❌ Standby cluster: No pods found"
-            exit 1
-          fi
-          
-          echo ""
-          echo "✅ Basic verification: Pods are created in both clusters"
->>>>>>> 52a718bd9ccd315d3dd078a1e3e9cff405413192
 
       - name: Deployment summary
         run: |
