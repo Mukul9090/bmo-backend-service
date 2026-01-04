@@ -132,13 +132,41 @@ jobs:
           kubectl wait --for=condition=available --timeout=300s deployment/backend-service --context=$STANDBY_CTX -n default || true
           kubectl wait --for=condition=available --timeout=300s deployment/haproxy --context=$HAPROXY_CTX || true
 
-      - name: Setup HAProxy port-forward
+      - name: Setup persistent HAProxy port-forward
         run: |
           HAPROXY_CTX="${{ steps.detect-contexts.outputs.haproxy_context }}"
+          
+          # Create bin directory if it doesn't exist
+          mkdir -p ~/bin
+          
+          # Stop any existing port-forwards
           pkill -f "kubectl port-forward.*haproxy" || true
-          nohup kubectl port-forward --context=$HAPROXY_CTX svc/haproxy 9090:9090 > /tmp/haproxy-portforward.log 2>&1 &
-          sleep 3
-          echo "✅ HAProxy accessible at http://localhost:9090" >> $GITHUB_STEP_SUMMARY
+          pkill -f "keep-haproxy-forward" || true
+          
+          # Create persistent port-forward script
+          cat > ~/bin/keep-haproxy-forward.sh << EOF
+          #!/bin/bash
+          while true; do
+            kubectl port-forward --context=$HAPROXY_CTX svc/haproxy 9090:9090 2>&1 | tee -a /tmp/haproxy-portforward.log
+            echo "Port-forward disconnected, reconnecting in 5 seconds..." >> /tmp/haproxy-portforward.log
+            sleep 5
+          done
+          EOF
+          
+          chmod +x ~/bin/keep-haproxy-forward.sh
+          
+          # Start the persistent port-forward in background
+          nohup ~/bin/keep-haproxy-forward.sh > /dev/null 2>&1 &
+          
+          # Wait a moment and verify it's running
+          sleep 5
+          if pgrep -f "keep-haproxy-forward" > /dev/null; then
+            echo "✅ Persistent HAProxy port-forward started successfully" >> $GITHUB_STEP_SUMMARY
+            echo "✅ HAProxy accessible at http://localhost:9090" >> $GITHUB_STEP_SUMMARY
+            echo "✅ Port-forward will persist after workflow completes" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️  Port-forward script started but may not be running" >> $GITHUB_STEP_SUMMARY
+          fi
 
       - name: Deployment summary
         run: |
