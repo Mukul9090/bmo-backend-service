@@ -149,7 +149,7 @@ jobs:
             # Set hot ConfigMap again (standby overwrote it)
             kubectl create configmap backend-config --from-literal=CLUSTER_ROLE=hot --context=$HOT_CTX -n default --dry-run=client -o yaml | kubectl apply --context=$HOT_CTX -f -
             # Restart hot pods to pick up correct ConfigMap
-            kubectl rollout restart deployment/backend-service --context=$HOT_CTX -n default
+            kubectl rollout restart deployment/backend-service-hot --context=$HOT_CTX -n default || kubectl rollout restart deployment/backend-service --context=$HOT_CTX -n default || true
             # Wait a bit for restart
             sleep 5
             # Now set standby ConfigMap and restart standby pods
