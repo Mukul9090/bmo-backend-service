@@ -10,11 +10,11 @@ spec:
   replicas: 2
   selector:
     matchLabels:
-      app: backend-service
+      app: backend-service-hot
   template:
     metadata:
       labels:
-        app: backend-service
+        app: backend-service-hot
         cluster: hot
     spec:
       securityContext:

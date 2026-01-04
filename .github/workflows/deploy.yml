@@ -134,7 +134,7 @@ jobs:
           
           # Wait for hot cluster pods to be ready
           echo "Waiting for hot cluster to be ready..."
-          kubectl wait --for=condition=available --timeout=120s deployment/backend-service --context=$HOT_CTX -n default || true
+          kubectl wait --for=condition=available --timeout=120s deployment/backend-service-hot --context=$HOT_CTX -n default || kubectl wait --for=condition=available --timeout=120s deployment/backend-service --context=$HOT_CTX -n default || true
           sleep 3
           
           # Deploy standby cluster
@@ -165,7 +165,8 @@ jobs:
           kubectl get svc backend-service --context=$STANDBY_CTX -n default || echo "Standby service not found"
           
           # Get service endpoints - use ClusterIP (HAProxy can't resolve Kubernetes DNS)
-          HOT_CLUSTERIP=$(kubectl get svc backend-service --context=$HOT_CTX -n default -o jsonpath='{.spec.clusterIP}' 2>/dev/null || echo "")
+          # Use separate service names to avoid conflicts when same cluster
+          HOT_CLUSTERIP=$(kubectl get svc backend-service-hot --context=$HOT_CTX -n default -o jsonpath='{.spec.clusterIP}' 2>/dev/null || kubectl get svc backend-service --context=$HOT_CTX -n default -o jsonpath='{.spec.clusterIP}' 2>/dev/null || echo "")
           STANDBY_CLUSTERIP=$(kubectl get svc backend-service --context=$STANDBY_CTX -n default -o jsonpath='{.spec.clusterIP}' 2>/dev/null || echo "")
           
           if [ -n "$HOT_CLUSTERIP" ] && [ -n "$STANDBY_CLUSTERIP" ]; then
@@ -229,7 +230,7 @@ jobs:
           HAPROXY_CTX="${{ steps.detect-contexts.outputs.haproxy_context }}"
           
           echo "Waiting for backend deployments..."
-          kubectl wait --for=condition=available --timeout=300s deployment/backend-service --context=$HOT_CTX -n default || true
+          kubectl wait --for=condition=available --timeout=300s deployment/backend-service-hot --context=$HOT_CTX -n default || kubectl wait --for=condition=available --timeout=300s deployment/backend-service --context=$HOT_CTX -n default || true
           kubectl wait --for=condition=available --timeout=300s deployment/backend-service --context=$STANDBY_CTX -n default || true
           
           echo "Waiting for HAProxy deployment..."
@@ -314,10 +315,10 @@ jobs:
           STANDBY_CTX="${{ steps.detect-contexts.outputs.standby_context }}"
           
           echo "Checking pods in hot cluster..."
-          HOT_PODS=$(kubectl get pods --context=$HOT_CTX -n default -l app=backend-service --no-headers 2>/dev/null | wc -l | tr -d ' ')
+          HOT_PODS=$(kubectl get pods --context=$HOT_CTX -n default -l 'app in (backend-service,backend-service-hot)' --no-headers 2>/dev/null | wc -l | tr -d ' ')
           if [ "$HOT_PODS" -gt 0 ]; then
             echo "✅ Hot cluster: $HOT_PODS pod(s) found"
-            kubectl get pods --context=$HOT_CTX -n default -l app=backend-service
+            kubectl get pods --context=$HOT_CTX -n default -l 'app in (backend-service,backend-service-hot)'
           else
             echo "❌ Hot cluster: No pods found"
             exit 1
