@@ -132,18 +132,66 @@ jobs:
           sed "s|image: ${{ env.DOCKER_IMAGE }}$|image: ${{ env.DOCKER_IMAGE }}:${{ env.DOCKER_TAG }}|" k8s/cluster-hot/deployment.yaml | kubectl apply --context=$HOT_CTX -f -
           kubectl apply --context=$HOT_CTX -f k8s/cluster-hot/service.yaml
           
+          # Wait for hot cluster pods to be ready
+          echo "Waiting for hot cluster to be ready..."
+          kubectl wait --for=condition=available --timeout=120s deployment/backend-service --context=$HOT_CTX -n default || true
+          sleep 3
+          
           # Deploy standby cluster
           kubectl create configmap backend-config --from-literal=CLUSTER_ROLE=standby --context=$STANDBY_CTX -n default --dry-run=client -o yaml | kubectl apply --context=$STANDBY_CTX -f -
           sed "s|image: ${{ env.DOCKER_IMAGE }}$|image: ${{ env.DOCKER_IMAGE }}:${{ env.DOCKER_TAG }}|" k8s/cluster-standby/deployment.yaml | kubectl apply --context=$STANDBY_CTX -f -
           kubectl apply --context=$STANDBY_CTX -f k8s/cluster-standby/service.yaml
           
-          # Get external IPs
-          sleep 10
-          HOT_IP=$(kubectl get svc backend-service --context=$HOT_CTX -n default -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || kubectl get nodes --context=$HOT_CTX -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null || echo "localhost")
-          STANDBY_IP=$(kubectl get svc backend-service --context=$STANDBY_CTX -n default -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || kubectl get nodes --context=$STANDBY_CTX -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null || echo "localhost")
+          # If same context, we need to handle ConfigMap conflict
+          # The second ConfigMap overwrites the first, so we need to set it back and restart pods
+          if [ "$HOT_CTX" = "$STANDBY_CTX" ]; then
+            echo "Same context detected - fixing ConfigMap conflict..."
+            # Set hot ConfigMap again (standby overwrote it)
+            kubectl create configmap backend-config --from-literal=CLUSTER_ROLE=hot --context=$HOT_CTX -n default --dry-run=client -o yaml | kubectl apply --context=$HOT_CTX -f -
+            # Restart hot pods to pick up correct ConfigMap
+            kubectl rollout restart deployment/backend-service --context=$HOT_CTX -n default
+            # Wait a bit for restart
+            sleep 5
+            # Now set standby ConfigMap and restart standby pods
+            kubectl create configmap backend-config --from-literal=CLUSTER_ROLE=standby --context=$STANDBY_CTX -n default --dry-run=client -o yaml | kubectl apply --context=$STANDBY_CTX -f -
+            kubectl rollout restart deployment/backend-service --context=$STANDBY_CTX -n default
+            sleep 5
+          fi
           
-          # Update and deploy HAProxy
-          sed "s|<HOT_CLUSTER_EXTERNAL_IP>|${HOT_IP}:80|g" k8s/haproxy/configmap.yaml | sed "s|<STANDBY_CLUSTER_EXTERNAL_IP>|${STANDBY_IP}:80|g" | kubectl apply --context=$HAPROXY_CTX -f -
+          # Wait for services to be ready before getting IPs
+          echo "Waiting for services to be ready..."
+          kubectl wait --for=condition=ready --timeout=60s service/backend-service --context=$HOT_CTX -n default || true
+          kubectl wait --for=condition=ready --timeout=60s service/backend-service --context=$STANDBY_CTX -n default || true
+          sleep 5
+          
+          # Get service endpoints
+          if [ "$HOT_CTX" = "$STANDBY_CTX" ]; then
+            # Same cluster - both services have same name, so they point to same service
+            # Use internal DNS - HAProxy will route based on which pods are healthy
+            HOT_IP="backend-service.default.svc.cluster.local"
+            STANDBY_IP="backend-service.default.svc.cluster.local"
+            echo "Same cluster - using internal DNS: $HOT_IP"
+            echo "Note: Both point to same service, HAProxy will route based on pod health"
+          else
+            # Different clusters - get external IPs or node IPs
+            HOT_IP=$(kubectl get svc backend-service --context=$HOT_CTX -n default -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || kubectl get nodes --context=$HOT_CTX -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null || echo "localhost")
+            STANDBY_IP=$(kubectl get svc backend-service --context=$STANDBY_CTX -n default -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || kubectl get nodes --context=$STANDBY_CTX -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null || echo "localhost")
+            echo "Different clusters - Hot=$HOT_IP, Standby=$STANDBY_IP"
+          fi
+          
+          echo "Hot cluster endpoint: $HOT_IP"
+          echo "Standby cluster endpoint: $STANDBY_IP"
+          
+          # Update and deploy HAProxy (remove :80 if already in IP, add if missing)
+          HAPROXY_CONFIG=$(sed "s|<HOT_CLUSTER_EXTERNAL_IP>|${HOT_IP}|g" k8s/haproxy/configmap.yaml | sed "s|<STANDBY_CLUSTER_EXTERNAL_IP>|${STANDBY_IP}|g")
+          # Ensure port 80 is added if using IPs (not DNS)
+          if [[ "$HOT_IP" != *"svc.cluster.local"* ]] && [[ "$HOT_IP" != *":80"* ]]; then
+            HAPROXY_CONFIG=$(echo "$HAPROXY_CONFIG" | sed "s|server hot ${HOT_IP}|server hot ${HOT_IP}:80|g")
+          fi
+          if [[ "$STANDBY_IP" != *"svc.cluster.local"* ]] && [[ "$STANDBY_IP" != *":80"* ]]; then
+            HAPROXY_CONFIG=$(echo "$HAPROXY_CONFIG" | sed "s|server standby ${STANDBY_IP}|server standby ${STANDBY_IP}:80|g")
+          fi
+          echo "$HAPROXY_CONFIG" | kubectl apply --context=$HAPROXY_CTX -f -
           kubectl apply --context=$HAPROXY_CTX -f k8s/haproxy/deployment.yaml
           kubectl apply --context=$HAPROXY_CTX -f k8s/haproxy/service.yaml
 
@@ -153,13 +201,43 @@ jobs:
           STANDBY_CTX="${{ steps.detect-contexts.outputs.standby_context }}"
           HAPROXY_CTX="${{ steps.detect-contexts.outputs.haproxy_context }}"
           
+          echo "Waiting for backend deployments..."
           kubectl wait --for=condition=available --timeout=300s deployment/backend-service --context=$HOT_CTX -n default || true
           kubectl wait --for=condition=available --timeout=300s deployment/backend-service --context=$STANDBY_CTX -n default || true
-          kubectl wait --for=condition=available --timeout=300s deployment/haproxy --context=$HAPROXY_CTX || true
+          
+          echo "Waiting for HAProxy deployment..."
+          # Wait for HAProxy pod to be running (not just available)
+          for i in {1..30}; do
+            HAPROXY_READY=$(kubectl get pods --context=$HAPROXY_CTX -l app=haproxy -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo "Unknown")
+            if [ "$HAPROXY_READY" = "Running" ]; then
+              echo "✅ HAProxy pod is running"
+              break
+            fi
+            echo "Waiting for HAProxy... ($i/30) Current status: $HAPROXY_READY"
+            sleep 2
+          done
+          
+          # Check HAProxy pod status
+          HAPROXY_POD=$(kubectl get pods --context=$HAPROXY_CTX -l app=haproxy -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+          if [ -n "$HAPROXY_POD" ]; then
+            echo "HAProxy pod: $HAPROXY_POD"
+            kubectl get pod $HAPROXY_POD --context=$HAPROXY_CTX -o wide || true
+          fi
 
       - name: Setup persistent HAProxy port-forward
         run: |
           HAPROXY_CTX="${{ steps.detect-contexts.outputs.haproxy_context }}"
+          
+          # Wait for HAProxy service to be ready
+          echo "Waiting for HAProxy service..."
+          for i in {1..30}; do
+            if kubectl get svc haproxy --context=$HAPROXY_CTX &>/dev/null; then
+              echo "✅ HAProxy service exists"
+              break
+            fi
+            echo "Waiting for HAProxy service... ($i/30)"
+            sleep 2
+          done
           
           # Create bin directory if it doesn't exist
           mkdir -p ~/bin
@@ -167,6 +245,7 @@ jobs:
           # Stop any existing port-forwards
           pkill -f "kubectl port-forward.*haproxy" || true
           pkill -f "keep-haproxy-forward" || true
+          sleep 2
           
           # Create persistent port-forward script
           cat > ~/bin/keep-haproxy-forward.sh << EOF
@@ -183,14 +262,23 @@ jobs:
           # Start the persistent port-forward in background
           nohup ~/bin/keep-haproxy-forward.sh > /dev/null 2>&1 &
           
-          # Wait a moment and verify it's running
-          sleep 5
-          if pgrep -f "keep-haproxy-forward" > /dev/null; then
+          # Wait and verify port-forward is working
+          echo "Waiting for port-forward to be ready..."
+          for i in {1..20}; do
+            if curl -s -f http://localhost:9090/healthz > /dev/null 2>&1; then
+              echo "✅ HAProxy port-forward is working"
+              break
+            fi
+            echo "Waiting for port-forward... ($i/20)"
+            sleep 2
+          done
+          
+          if curl -s -f http://localhost:9090/healthz > /dev/null 2>&1; then
             echo "✅ Persistent HAProxy port-forward started successfully" >> $GITHUB_STEP_SUMMARY
             echo "✅ HAProxy accessible at http://localhost:9090" >> $GITHUB_STEP_SUMMARY
-            echo "✅ Port-forward will persist after workflow completes" >> $GITHUB_STEP_SUMMARY
           else
-            echo "⚠️  Port-forward script started but may not be running" >> $GITHUB_STEP_SUMMARY
+            echo "⚠️  Port-forward may not be working - check HAProxy pod status" >> $GITHUB_STEP_SUMMARY
+            kubectl get pods --context=$HAPROXY_CTX -l app=haproxy >> $GITHUB_STEP_SUMMARY || true
           fi
 
       - name: Run basic deployment tests
