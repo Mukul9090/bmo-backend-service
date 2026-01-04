@@ -158,40 +158,45 @@ jobs:
             sleep 5
           fi
           
-          # Wait for services to be ready before getting IPs
-          echo "Waiting for services to be ready..."
-          kubectl wait --for=condition=ready --timeout=60s service/backend-service --context=$HOT_CTX -n default || true
-          kubectl wait --for=condition=ready --timeout=60s service/backend-service --context=$STANDBY_CTX -n default || true
-          sleep 5
+          # Wait for services to exist (services don't have 'ready' condition)
+          echo "Waiting for services to be created..."
+          sleep 3
+          kubectl get svc backend-service --context=$HOT_CTX -n default || echo "Hot service not found"
+          kubectl get svc backend-service --context=$STANDBY_CTX -n default || echo "Standby service not found"
           
-          # Get service endpoints
+          # Get service endpoints - use DNS for same cluster, IPs for different clusters
           if [ "$HOT_CTX" = "$STANDBY_CTX" ]; then
-            # Same cluster - both services have same name, so they point to same service
-            # Use internal DNS - HAProxy will route based on which pods are healthy
-            HOT_IP="backend-service.default.svc.cluster.local"
-            STANDBY_IP="backend-service.default.svc.cluster.local"
-            echo "Same cluster - using internal DNS: $HOT_IP"
+            # Same cluster - use internal DNS (stable, doesn't change with service recreation)
+            HOT_ENDPOINT="backend-service.default.svc.cluster.local:80"
+            STANDBY_ENDPOINT="backend-service.default.svc.cluster.local:80"
+            echo "Same cluster - using internal DNS: $HOT_ENDPOINT"
             echo "Note: Both point to same service, HAProxy will route based on pod health"
           else
-            # Different clusters - get external IPs or node IPs
-            HOT_IP=$(kubectl get svc backend-service --context=$HOT_CTX -n default -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || kubectl get nodes --context=$HOT_CTX -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null || echo "localhost")
-            STANDBY_IP=$(kubectl get svc backend-service --context=$STANDBY_CTX -n default -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || kubectl get nodes --context=$STANDBY_CTX -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null || echo "localhost")
-            echo "Different clusters - Hot=$HOT_IP, Standby=$STANDBY_IP"
+            # Different clusters - get ClusterIP or external IPs
+            HOT_CLUSTERIP=$(kubectl get svc backend-service --context=$HOT_CTX -n default -o jsonpath='{.spec.clusterIP}' 2>/dev/null || echo "")
+            STANDBY_CLUSTERIP=$(kubectl get svc backend-service --context=$STANDBY_CTX -n default -o jsonpath='{.spec.clusterIP}' 2>/dev/null || echo "")
+            
+            if [ -n "$HOT_CLUSTERIP" ] && [ -n "$STANDBY_CLUSTERIP" ]; then
+              # Use ClusterIPs (more stable than LoadBalancer IPs)
+              HOT_ENDPOINT="${HOT_CLUSTERIP}:80"
+              STANDBY_ENDPOINT="${STANDBY_CLUSTERIP}:80"
+              echo "Using ClusterIPs - Hot=$HOT_ENDPOINT, Standby=$STANDBY_ENDPOINT"
+            else
+              # Fallback to external IPs or node IPs
+              HOT_ENDPOINT=$(kubectl get svc backend-service --context=$HOT_CTX -n default -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || kubectl get nodes --context=$HOT_CTX -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null || echo "localhost")
+              STANDBY_ENDPOINT=$(kubectl get svc backend-service --context=$STANDBY_CTX -n default -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || kubectl get nodes --context=$STANDBY_CTX -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null || echo "localhost")
+              # Add port if not present
+              [[ "$HOT_ENDPOINT" != *":"* ]] && HOT_ENDPOINT="${HOT_ENDPOINT}:80"
+              [[ "$STANDBY_ENDPOINT" != *":"* ]] && STANDBY_ENDPOINT="${STANDBY_ENDPOINT}:80"
+              echo "Using external IPs - Hot=$HOT_ENDPOINT, Standby=$STANDBY_ENDPOINT"
+            fi
           fi
           
-          echo "Hot cluster endpoint: $HOT_IP"
-          echo "Standby cluster endpoint: $STANDBY_IP"
+          echo "Hot cluster endpoint: $HOT_ENDPOINT"
+          echo "Standby cluster endpoint: $STANDBY_ENDPOINT"
           
-          # Update and deploy HAProxy (remove :80 if already in IP, add if missing)
-          HAPROXY_CONFIG=$(sed "s|<HOT_CLUSTER_EXTERNAL_IP>|${HOT_IP}|g" k8s/haproxy/configmap.yaml | sed "s|<STANDBY_CLUSTER_EXTERNAL_IP>|${STANDBY_IP}|g")
-          # Ensure port 80 is added if using IPs (not DNS)
-          if [[ "$HOT_IP" != *"svc.cluster.local"* ]] && [[ "$HOT_IP" != *":80"* ]]; then
-            HAPROXY_CONFIG=$(echo "$HAPROXY_CONFIG" | sed "s|server hot ${HOT_IP}|server hot ${HOT_IP}:80|g")
-          fi
-          if [[ "$STANDBY_IP" != *"svc.cluster.local"* ]] && [[ "$STANDBY_IP" != *":80"* ]]; then
-            HAPROXY_CONFIG=$(echo "$HAPROXY_CONFIG" | sed "s|server standby ${STANDBY_IP}|server standby ${STANDBY_IP}:80|g")
-          fi
-          echo "$HAPROXY_CONFIG" | kubectl apply --context=$HAPROXY_CTX -f -
+          # Update and deploy HAProxy configmap with endpoints
+          sed "s|<HOT_CLUSTER_EXTERNAL_IP>|${HOT_ENDPOINT}|g" k8s/haproxy/configmap.yaml | sed "s|<STANDBY_CLUSTER_EXTERNAL_IP>|${STANDBY_ENDPOINT}|g" | kubectl apply --context=$HAPROXY_CTX -f -
           kubectl apply --context=$HAPROXY_CTX -f k8s/haproxy/deployment.yaml
           kubectl apply --context=$HAPROXY_CTX -f k8s/haproxy/service.yaml
 
