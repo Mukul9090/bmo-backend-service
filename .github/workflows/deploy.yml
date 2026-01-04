@@ -112,13 +112,69 @@ jobs:
           sed "s|image: ${{ env.DOCKER_IMAGE }}$|image: ${{ env.DOCKER_IMAGE }}:${{ env.DOCKER_TAG }}|" k8s/cluster-standby/deployment.yaml | kubectl apply --context=$STANDBY_CTX -f -
           kubectl apply --context=$STANDBY_CTX -f k8s/cluster-standby/service.yaml
           
-          # Get external IPs
+          # Get external IPs with better fallback logic
           sleep 10
-          HOT_IP=$(kubectl get svc backend-service --context=$HOT_CTX -n default -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || kubectl get nodes --context=$HOT_CTX -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null || echo "localhost")
-          STANDBY_IP=$(kubectl get svc backend-service --context=$STANDBY_CTX -n default -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || kubectl get nodes --context=$STANDBY_CTX -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null || echo "localhost")
           
-          # Update and deploy HAProxy
-          sed "s|<HOT_CLUSTER_EXTERNAL_IP>|${HOT_IP}:80|g" k8s/haproxy/configmap.yaml | sed "s|<STANDBY_CLUSTER_EXTERNAL_IP>|${STANDBY_IP}:80|g" | kubectl apply --context=$HAPROXY_CTX -f -
+          # Try to get LoadBalancer IP first, then NodePort, then internal service DNS
+          HOT_IP=$(kubectl get svc backend-service --context=$HOT_CTX -n default -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)
+          if [ -z "$HOT_IP" ]; then
+            # Try to get node IP for NodePort access
+            HOT_IP=$(kubectl get nodes --context=$HOT_CTX -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null)
+          fi
+          if [ -z "$HOT_IP" ]; then
+            # Fallback to internal service DNS (for single-cluster setup)
+            HOT_IP="backend-service.cluster-hot.svc.cluster.local"
+            echo "⚠️  Using internal DNS for hot cluster: $HOT_IP"
+          else
+            echo "✅ Using IP for hot cluster: $HOT_IP"
+          fi
+          
+          STANDBY_IP=$(kubectl get svc backend-service --context=$STANDBY_CTX -n default -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)
+          if [ -z "$STANDBY_IP" ]; then
+            STANDBY_IP=$(kubectl get nodes --context=$STANDBY_CTX -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null)
+          fi
+          if [ -z "$STANDBY_IP" ]; then
+            STANDBY_IP="backend-service.cluster-standby.svc.cluster.local"
+            echo "⚠️  Using internal DNS for standby cluster: $STANDBY_IP"
+          else
+            echo "✅ Using IP for standby cluster: $STANDBY_IP"
+          fi
+          
+          # Validate IPs are not empty or "localhost"
+          if [ "$HOT_IP" = "localhost" ] || [ -z "$HOT_IP" ]; then
+            echo "❌ Invalid HOT_IP: $HOT_IP, using internal DNS fallback"
+            HOT_IP="backend-service.cluster-hot.svc.cluster.local"
+          fi
+          
+          if [ "$STANDBY_IP" = "localhost" ] || [ -z "$STANDBY_IP" ]; then
+            echo "❌ Invalid STANDBY_IP: $STANDBY_IP, using internal DNS fallback"
+            STANDBY_IP="backend-service.cluster-standby.svc.cluster.local"
+          fi
+          
+          echo "Final HOT_IP: $HOT_IP"
+          echo "Final STANDBY_IP: $STANDBY_IP"
+          
+          # Update and deploy HAProxy with validated IPs
+          # Add port 80 for all IPs/DNS (HAProxy config expects format: server name IP:port)
+          if [[ "$HOT_IP" == *":"* ]]; then
+            # IP already has port, use as-is
+            HOT_SERVER="${HOT_IP}"
+          else
+            # Add port 80
+            HOT_SERVER="${HOT_IP}:80"
+          fi
+          
+          if [[ "$STANDBY_IP" == *":"* ]]; then
+            STANDBY_SERVER="${STANDBY_IP}"
+          else
+            STANDBY_SERVER="${STANDBY_IP}:80"
+          fi
+          
+          echo "Deploying HAProxy with:"
+          echo "  Hot server: $HOT_SERVER"
+          echo "  Standby server: $STANDBY_SERVER"
+          
+          sed "s|<HOT_CLUSTER_EXTERNAL_IP>|${HOT_SERVER}|g" k8s/haproxy/configmap.yaml | sed "s|<STANDBY_CLUSTER_EXTERNAL_IP>|${STANDBY_SERVER}|g" | kubectl apply --context=$HAPROXY_CTX -f -
           kubectl apply --context=$HAPROXY_CTX -f k8s/haproxy/deployment.yaml
           kubectl apply --context=$HAPROXY_CTX -f k8s/haproxy/service.yaml
 

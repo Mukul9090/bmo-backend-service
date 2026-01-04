@@ -13,27 +13,42 @@ data:
       mode http
       option httplog
       option log-health-checks
-      timeout connect 2s
+      timeout connect 5s
       timeout client  30s
       timeout server  30s
-      timeout check   1s
-      timeout http-request 2s
+      timeout check   3s
+      timeout http-request 5s
+      option dontlognull
+      option forwardfor
 
+    # HAProxy stats and health endpoint
+    frontend stats
+      bind *:8404
+      stats enable
+      stats uri /stats
+      stats refresh 30s
+      stats admin if TRUE
+
+    # Main frontend
     frontend http_front
       bind *:9090
       default_backend backend_pool
+      
+      # Health check endpoint for HAProxy itself
+      http-request return status 200 content-type text/plain string "OK" if { path /healthz }
 
     backend backend_pool
       option httpchk GET /healthz
       http-check expect status 200
+      balance roundrobin
       
       # Hot cluster (primary) - will automatically get traffic when healthy
       # Replace <HOT_CLUSTER_EXTERNAL_IP> with the actual LoadBalancer IP or NodePort endpoint
       # Example: 192.168.1.100:80 or hot-cluster.example.com:80
-      server hot <HOT_CLUSTER_EXTERNAL_IP>:80 check inter 1s fall 2 rise 1 fastinter 500ms downinter 1s
+      server hot <HOT_CLUSTER_EXTERNAL_IP> check inter 2s fall 3 rise 2 fastinter 1s downinter 2s
       
       # Standby cluster (backup) - only used when hot is down
       # Replace <STANDBY_CLUSTER_EXTERNAL_IP> with the actual LoadBalancer IP or NodePort endpoint
       # Example: 192.168.1.101:80 or standby-cluster.example.com:80
-      server standby <STANDBY_CLUSTER_EXTERNAL_IP>:80 check inter 1s fall 2 rise 1 fastinter 500ms downinter 1s backup
+      server standby <STANDBY_CLUSTER_EXTERNAL_IP> check inter 2s fall 3 rise 2 fastinter 1s downinter 2s backup
 
