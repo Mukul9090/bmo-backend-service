@@ -13,6 +13,9 @@ env:
   K8S_NAMESPACE_HOT: backend-hot
   K8S_NAMESPACE_STANDBY: backend-standby
   REPLICAS: 2
+  K8S_CLUSTER_HOT_CONTEXT: hot-cluster
+  K8S_CLUSTER_STANDBY_CONTEXT: standby-cluster
+  HAPROXY_CLUSTER_CONTEXT: hot-cluster
 
 jobs:
   codeql-analysis:
@@ -80,59 +83,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Detect cluster contexts
-        id: detect-contexts
-        run: |
-          # Get available contexts
-          AVAILABLE_CONTEXTS=$(kubectl config get-contexts -o name 2>/dev/null || echo "")
-          CURRENT_CONTEXT=$(kubectl config current-context 2>/dev/null || echo "")
-          
-          echo "Available contexts: $AVAILABLE_CONTEXTS"
-          echo "Current context: $CURRENT_CONTEXT"
-          
-          # Check if specified contexts exist, otherwise use current context
-          if kubectl config get-contexts ${{ env.K8S_CLUSTER_HOT_CONTEXT }} &>/dev/null; then
-            HOT_CTX="${{ env.K8S_CLUSTER_HOT_CONTEXT }}"
-            echo "✅ Using hot context: $HOT_CTX"
-          else
-            HOT_CTX="${CURRENT_CONTEXT:-minikube}"
-            echo "⚠️  Hot context '${{ env.K8S_CLUSTER_HOT_CONTEXT }}' not found, using: $HOT_CTX"
-          fi
-          
-          if kubectl config get-contexts ${{ env.K8S_CLUSTER_STANDBY_CONTEXT }} &>/dev/null; then
-            STANDBY_CTX="${{ env.K8S_CLUSTER_STANDBY_CONTEXT }}"
-            echo "✅ Using standby context: $STANDBY_CTX"
-          else
-            STANDBY_CTX="${CURRENT_CONTEXT:-minikube}"
-            echo "⚠️  Standby context '${{ env.K8S_CLUSTER_STANDBY_CONTEXT }}' not found, using: $STANDBY_CTX"
-          fi
-          
-          if kubectl config get-contexts ${{ env.HAPROXY_CLUSTER_CONTEXT }} &>/dev/null; then
-            HAPROXY_CTX="${{ env.HAPROXY_CLUSTER_CONTEXT }}"
-            echo "✅ Using HAProxy context: $HAPROXY_CTX"
-          else
-            HAPROXY_CTX="${CURRENT_CONTEXT:-minikube}"
-            echo "⚠️  HAProxy context '${{ env.HAPROXY_CLUSTER_CONTEXT }}' not found, using: $HAPROXY_CTX"
-          fi
-          
-          echo "hot_context=$HOT_CTX" >> $GITHUB_OUTPUT
-          echo "standby_context=$STANDBY_CTX" >> $GITHUB_OUTPUT
-          echo "haproxy_context=$HAPROXY_CTX" >> $GITHUB_OUTPUT
-
       - name: Clean existing deployments
         run: |
-          HOT_CTX="${{ steps.detect-contexts.outputs.hot_context }}"
-          STANDBY_CTX="${{ steps.detect-contexts.outputs.standby_context }}"
-          HAPROXY_CTX="${{ steps.detect-contexts.outputs.haproxy_context }}"
+          HOT_CTX="${{ env.K8S_CLUSTER_HOT_CONTEXT }}"
+          STANDBY_CTX="${{ env.K8S_CLUSTER_STANDBY_CONTEXT }}"
+          HAPROXY_CTX="${{ env.HAPROXY_CLUSTER_CONTEXT }}"
           
           chmod +x cleanup.sh
           ./cleanup.sh "$HOT_CTX" "$STANDBY_CTX" "$HAPROXY_CTX"
 
       - name: Deploy using deploy.sh
         run: |
-          HOT_CTX="${{ steps.detect-contexts.outputs.hot_context }}"
-          STANDBY_CTX="${{ steps.detect-contexts.outputs.standby_context }}"
-          HAPROXY_CTX="${{ steps.detect-contexts.outputs.haproxy_context }}"
+          HOT_CTX="${{ env.K8S_CLUSTER_HOT_CONTEXT }}"
+          STANDBY_CTX="${{ env.K8S_CLUSTER_STANDBY_CONTEXT }}"
+          HAPROXY_CTX="${{ env.HAPROXY_CLUSTER_CONTEXT }}"
           
           chmod +x deploy.sh
           # Run deploy.sh with contexts and image info (non-interactive mode)
@@ -141,9 +105,9 @@ jobs:
 
       - name: Deploy and verify network policies
         run: |
-          HOT_CTX="${{ steps.detect-contexts.outputs.hot_context }}"
-          STANDBY_CTX="${{ steps.detect-contexts.outputs.standby_context }}"
-          HAPROXY_CTX="${{ steps.detect-contexts.outputs.haproxy_context }}"
+          HOT_CTX="${{ env.K8S_CLUSTER_HOT_CONTEXT }}"
+          STANDBY_CTX="${{ env.K8S_CLUSTER_STANDBY_CONTEXT }}"
+          HAPROXY_CTX="${{ env.HAPROXY_CLUSTER_CONTEXT }}"
           
           echo "🔒 Deploying network policies..."
           
@@ -170,7 +134,7 @@ jobs:
 
       - name: Setup persistent HAProxy port-forward
         run: |
-          HAPROXY_CTX="${{ steps.detect-contexts.outputs.haproxy_context }}"
+          HAPROXY_CTX="${{ env.HAPROXY_CLUSTER_CONTEXT }}"
           
           
           # Create bin directory if it doesn't exist
@@ -208,9 +172,9 @@ jobs:
 
       - name: Deployment summary
         run: |
-          HOT_CTX="${{ steps.detect-contexts.outputs.hot_context }}"
-          STANDBY_CTX="${{ steps.detect-contexts.outputs.standby_context }}"
-          HAPROXY_CTX="${{ steps.detect-contexts.outputs.haproxy_context }}"
+          HOT_CTX="${{ env.K8S_CLUSTER_HOT_CONTEXT }}"
+          STANDBY_CTX="${{ env.K8S_CLUSTER_STANDBY_CONTEXT }}"
+          HAPROXY_CTX="${{ env.HAPROXY_CLUSTER_CONTEXT }}"
           
           echo "## 🚀 Deployment Summary" >> $GITHUB_STEP_SUMMARY
           echo "Using contexts - Hot: $HOT_CTX, Standby: $STANDBY_CTX, HAProxy: $HAPROXY_CTX" >> $GITHUB_STEP_SUMMARY
