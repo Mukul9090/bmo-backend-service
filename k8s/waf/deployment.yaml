@@ -26,7 +26,7 @@ spec:
       - name: nginx-waf
         image: owasp/modsecurity-crs:nginx-alpine
         ports:
-        - containerPort: 80
+        - containerPort: 8080
           name: http
         env:
         - name: BACKEND_HOST
@@ -34,6 +34,8 @@ spec:
         - name: BACKEND_PORT
           value: "9090"
         - name: PROXY_PASS_URL
+          value: "http://haproxy.default.svc.cluster.local:9090"
+        - name: BACKEND
           value: "http://haproxy.default.svc.cluster.local:9090"
         - name: MODSEC_RULE_ENGINE
           value: "On"

@@ -19,16 +19,6 @@ else
     echo "Using default kubectl context"
 fi
 
-# Debug logging function
-log_debug() {
-    local hypothesis_id="$1"
-    local location="$2"
-    local message="$3"
-    local data="$4"
-    local timestamp=$(date +%s%3N)
-    echo "{\"sessionId\":\"debug-session\",\"runId\":\"run1\",\"hypothesisId\":\"$hypothesis_id\",\"location\":\"$location\",\"message\":\"$message\",\"data\":$data,\"timestamp\":$timestamp}" >> /Users/mukul/Desktop/HAproxytest/BMO/.cursor/debug.log
-}
-
 # Cleanup function
 cleanup() {
     if [ -n "$PF_PID" ]; then
@@ -41,89 +31,38 @@ trap cleanup EXIT
 
 echo "🔧 Setting up port-forward for WAF service..."
 
-# #region agent log
-CURRENT_CTX=$($KUBECTL_CMD config current-context 2>/dev/null || echo "none")
-log_debug "H3" "run_waf_test.sh:28" "Current kubectl context" "{\"context\":\"$CURRENT_CTX\"}"
-# #endregion
-
 # Initialize variables
 SERVICE_EXISTS=false
 SERVICE_NAMESPACE="default"
 
-# #region agent log
-log_debug "H1,H4" "run_waf_test.sh:34" "Checking if WAF service exists before port-forward" "{\"namespace\":\"default\",\"service\":\"modsecurity-waf\"}"
-# #endregion
-
-# Check if service exists in default namespace (H1, H4)
+# Check if service exists in default namespace
 if $KUBECTL_CMD get svc modsecurity-waf -n default &>/dev/null; then
-    # #region agent log
-    log_debug "H1,H4" "run_waf_test.sh:28" "WAF service exists in default namespace" "{\"service\":\"modsecurity-waf\",\"namespace\":\"default\"}"
-    # #endregion
     SERVICE_EXISTS=true
     SERVICE_NAMESPACE="default"
 else
-    # #region agent log
-    log_debug "H1,H4" "run_waf_test.sh:34" "WAF service NOT found in default namespace" "{\"service\":\"modsecurity-waf\",\"namespace\":\"default\"}"
-    # #endregion
-    
-    # #region agent log
-    ALL_SERVICES=$($KUBECTL_CMD get svc -n default -o json 2>/dev/null | jq -r '.items[].metadata.name' 2>/dev/null | tr '\n' ',' || echo "error")
-    log_debug "H2" "run_waf_test.sh:48" "All services in default namespace" "{\"services\":\"$ALL_SERVICES\"}"
-    # #endregion
-    
-    # #region agent log
-    ALL_NAMESPACES=$($KUBECTL_CMD get namespaces -o json 2>/dev/null | jq -r '.items[].metadata.name' 2>/dev/null | tr '\n' ',' || echo "error")
-    log_debug "H2" "run_waf_test.sh:52" "All namespaces" "{\"namespaces\":\"$ALL_NAMESPACES\"}"
-    # #endregion
-    
-    # Check other namespaces (H2)
+    # Check other namespaces
     for ns in $($KUBECTL_CMD get namespaces -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
         if $KUBECTL_CMD get svc modsecurity-waf -n "$ns" &>/dev/null; then
-            # #region agent log
-            log_debug "H2" "run_waf_test.sh:48" "WAF service found in different namespace" "{\"service\":\"modsecurity-waf\",\"namespace\":\"$ns\"}"
-            # #endregion
             SERVICE_EXISTS=true
             SERVICE_NAMESPACE="$ns"
             break
         fi
     done
-    
-    # #region agent log
-    WAF_DEPLOYMENT=$($KUBECTL_CMD get deployment modsecurity-waf -n default -o json 2>/dev/null | jq -r '.metadata.name // "not_found"' || echo "error")
-    log_debug "H1" "run_waf_test.sh:67" "WAF deployment status" "{\"deployment\":\"$WAF_DEPLOYMENT\",\"namespace\":\"default\"}"
-    # #endregion
-    
-    # #region agent log
-    WAF_PODS=$($KUBECTL_CMD get pods -l app=modsecurity-waf -n default -o json 2>/dev/null | jq -r '.items | length' || echo "error")
-    log_debug "H1" "run_waf_test.sh:71" "WAF pods count" "{\"pod_count\":\"$WAF_PODS\",\"namespace\":\"default\"}"
-    # #endregion
 fi
 
 # Kill any existing port-forwards on port 8080
 lsof -ti:8080 | xargs kill -9 2>/dev/null || true
 sleep 1
 
-# #region agent log
-log_debug "H3" "run_waf_test.sh:68" "Attempting port-forward" "{\"namespace\":\"$SERVICE_NAMESPACE\",\"service\":\"modsecurity-waf\",\"context\":\"$CURRENT_CTX\",\"service_exists\":\"$SERVICE_EXISTS\"}"
-# #endregion
-
 # Start port-forward
 $KUBECTL_CMD port-forward -n "$SERVICE_NAMESPACE" svc/modsecurity-waf 8080:80 > /tmp/waf-portforward.log 2>&1 &
 PF_PID=$!
 
-# #region agent log
-log_debug "H1,H4" "run_waf_test.sh:75" "Port-forward process started" "{\"pid\":\"$PF_PID\"}"
-# #endregion
-
-# Wait for port-forward to be ready (check process first)
+# Wait for port-forward to be ready
 sleep 2
 
 # Check if port-forward process is running
 if ! kill -0 $PF_PID 2>/dev/null; then
-    # #region agent log
-    PORT_FORWARD_ERROR=$(cat /tmp/waf-portforward.log 2>/dev/null || echo "no_log_file")
-    log_debug "H1,H4" "run_waf_test.sh:85" "Port-forward process failed" "{\"pid\":\"$PF_PID\",\"error\":\"$PORT_FORWARD_ERROR\"}"
-    # #endregion
     echo "❌ Port-forward process failed to start"
     cat /tmp/waf-portforward.log 2>/dev/null || true
     exit 1

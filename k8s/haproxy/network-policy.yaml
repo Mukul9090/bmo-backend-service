@@ -12,8 +12,14 @@ spec:
   - Egress
   
   ingress:
-  # Allow traffic from anywhere (HAProxy is the entry point)
-  - {}
+  # Allow traffic from ModSecurity WAF (WAF is now the entry point)
+  - from:
+    - podSelector:
+        matchLabels:
+          app: modsecurity-waf
+    ports:
+    - protocol: TCP
+      port: 9090
   
   egress:
   # Allow traffic to external backend clusters via their external endpoints

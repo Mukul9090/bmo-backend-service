@@ -40,6 +40,14 @@ pkill -f "kubectl port-forward" || true
 pkill -f "keep-haproxy-forward" || true
 sleep 2
 
+# Delete ModSecurity WAF
+echo -e "${BLUE}Deleting ModSecurity WAF...${NC}"
+$KUBECTL_CMD_HAPROXY delete deployment modsecurity-waf -n default --ignore-not-found=true || true
+$KUBECTL_CMD_HAPROXY delete service modsecurity-waf -n default --ignore-not-found=true || true
+$KUBECTL_CMD_HAPROXY delete configmap modsecurity-config -n default --ignore-not-found=true || true
+$KUBECTL_CMD_HAPROXY delete configmap modsecurity-nginx-config -n default --ignore-not-found=true || true
+$KUBECTL_CMD_HAPROXY delete networkpolicy modsecurity-waf-network-policy -n default --ignore-not-found=true || true
+
 # Delete HAProxy
 echo -e "${BLUE}Deleting HAProxy...${NC}"
 $KUBECTL_CMD_HAPROXY delete deployment haproxy -n default --ignore-not-found=true || true

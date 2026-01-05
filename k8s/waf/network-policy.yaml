@@ -25,14 +25,13 @@ spec:
     - protocol: TCP
       port: 9090
   
-  # Allow DNS queries
+  # Allow DNS queries to kube-system namespace
   - to:
     - namespaceSelector:
         matchLabels:
-          name: kube-system
-      podSelector:
-        matchLabels:
-          k8s-app: kube-dns
+          kubernetes.io/metadata.name: kube-system
     ports:
     - protocol: UDP
+      port: 53
+    - protocol: TCP
       port: 53

@@ -6,16 +6,16 @@ metadata:
   labels:
     app: haproxy
 spec:
-  type: NodePort
+  type: ClusterIP
+  # HAProxy is internal-only, accessible only via WAF
+  # No NodePort - all traffic must go through WAF first
   selector:
     app: haproxy
   ports:
     - name: http
       port: 9090
       targetPort: 9090
-      nodePort: 30090
     - name: stats
       port: 8404
       targetPort: 8404
-      nodePort: 30404
 

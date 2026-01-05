@@ -156,9 +156,9 @@ else
 fi
 
 # ============================================================================
-# Step 7: Get Service IPs and Deploy HAProxy
+# Step 6.5: Get Service IPs and Deploy HAProxy (Internal Only)
 # ============================================================================
-echo -e "${BLUE}⚖️  Step 6: Deploying HAProxy...${NC}"
+echo -e "${BLUE}⚖️  Step 6.5: Deploying HAProxy (Internal Only - ClusterIP)...${NC}"
 
 # Get service ClusterIPs
 HOT_IP=$($KUBECTL_CMD_HOT get svc backend-service-hot -n default -o jsonpath='{.spec.clusterIP}' 2>/dev/null || echo "")
@@ -183,15 +183,92 @@ $KUBECTL_CMD_HAPROXY apply -f k8s/haproxy/deployment.yaml
 $KUBECTL_CMD_HAPROXY apply -f k8s/haproxy/service.yaml
 $KUBECTL_CMD_HAPROXY apply -f k8s/haproxy/network-policy.yaml
 
-echo -e "${GREEN}✅ HAProxy deployed${NC}"
+echo -e "${GREEN}✅ HAProxy deployed (ClusterIP - internal only)${NC}"
+echo -e "${BLUE}   Note: HAProxy is NOT exposed externally. All traffic must go through WAF.${NC}"
 echo ""
 
 # Wait for HAProxy to be ready
+echo -e "${YELLOW}⏳ Waiting for HAProxy to be ready...${NC}"
 if [ -n "$HAPROXY_CONTEXT" ]; then
     $KUBECTL_CMD_HAPROXY wait --for=condition=ready --timeout=60s pod -l app=haproxy -n default 2>/dev/null || true
 else
     wait_for_pods "default" "app=haproxy" 60
 fi
+
+# ============================================================================
+# Step 7: Deploy ModSecurity WAF (Public Entry Point)
+# ============================================================================
+echo -e "${BLUE}🛡️  Step 7: Deploying ModSecurity WAF (Public Entry Point)...${NC}"
+
+# Deploy ModSecurity WAF ConfigMaps first
+$KUBECTL_CMD_HAPROXY apply -f k8s/waf/configmap-modsecurity.yaml
+$KUBECTL_CMD_HAPROXY apply -f k8s/waf/configmap-nginx.yaml
+
+# Deploy WAF (uses service DNS for HAProxy backend - no hardcoded IPs)
+echo -e "${BLUE}Configuring WAF to proxy to HAProxy via service DNS${NC}"
+$KUBECTL_CMD_HAPROXY apply -f k8s/waf/deployment.yaml
+
+$KUBECTL_CMD_HAPROXY apply -f k8s/waf/service.yaml
+$KUBECTL_CMD_HAPROXY apply -f k8s/waf/network-policy.yaml
+
+echo -e "${GREEN}✅ ModSecurity WAF manifests applied${NC}"
+echo ""
+
+# Wait for WAF pods to be ready with retry logic
+echo -e "${YELLOW}⏳ Waiting for WAF pods to be ready...${NC}"
+MAX_RETRIES=5
+RETRY_COUNT=0
+WAF_READY=false
+
+while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+    if [ -n "$HAPROXY_CONTEXT" ]; then
+        if $KUBECTL_CMD_HAPROXY wait --for=condition=ready --timeout=30s pod -l app=modsecurity-waf -n default 2>/dev/null; then
+            WAF_READY=true
+            break
+        fi
+    else
+        if wait_for_pods "default" "app=modsecurity-waf" 30; then
+            WAF_READY=true
+            break
+        fi
+    fi
+    
+    RETRY_COUNT=$((RETRY_COUNT + 1))
+    echo -e "${YELLOW}⚠️  WAF pods not ready yet, retrying... ($RETRY_COUNT/$MAX_RETRIES)${NC}"
+    
+    # Check for pod errors
+    FAILED_PODS=$($KUBECTL_CMD_HAPROXY get pods -l app=modsecurity-waf -n default -o jsonpath='{.items[?(@.status.phase!="Running")].metadata.name}' 2>/dev/null || echo "")
+    if [ -n "$FAILED_PODS" ]; then
+        echo -e "${YELLOW}Checking pod status...${NC}"
+        $KUBECTL_CMD_HAPROXY get pods -l app=modsecurity-waf -n default 2>/dev/null || true
+        echo -e "${YELLOW}Checking pod logs for errors...${NC}"
+        for pod in $FAILED_PODS; do
+            echo -e "${YELLOW}Pod $pod logs:${NC}"
+            $KUBECTL_CMD_HAPROXY logs $pod -n default --tail=10 2>/dev/null || true
+        done
+    fi
+    
+    sleep 5
+done
+
+if [ "$WAF_READY" = true ]; then
+    echo -e "${GREEN}✅ ModSecurity WAF pods are ready${NC}"
+    
+    # Verify WAF pods are actually running (not crashing)
+    CRASHING_PODS=$($KUBECTL_CMD_HAPROXY get pods -l app=modsecurity-waf -n default -o jsonpath='{.items[?(@.status.containerStatuses[0].ready==false)].metadata.name}' 2>/dev/null || echo "")
+    if [ -n "$CRASHING_PODS" ]; then
+        echo -e "${RED}❌ Warning: Some WAF pods are not ready${NC}"
+        $KUBECTL_CMD_HAPROXY get pods -l app=modsecurity-waf -n default 2>/dev/null || true
+    else
+        echo -e "${GREEN}✅ All WAF pods are running successfully${NC}"
+    fi
+else
+    echo -e "${RED}❌ Warning: WAF pods did not become ready after $MAX_RETRIES attempts${NC}"
+    echo -e "${YELLOW}Checking WAF pod status...${NC}"
+    $KUBECTL_CMD_HAPROXY get pods -l app=modsecurity-waf -n default 2>/dev/null || true
+    echo -e "${YELLOW}This may be normal if WAF is still starting up. Continuing deployment...${NC}"
+fi
+echo ""
 
 # ============================================================================
 # Step 7.5: Verify Prometheus can query kube-state-metrics
@@ -257,9 +334,11 @@ echo ""
 echo -e "${YELLOW}Option 1: Port Forwarding (Recommended)${NC}"
 echo "Run these commands in separate terminals:"
 echo ""
-echo -e "${GREEN}# Terminal 1: HAProxy (Load Balancer)${NC}"
-echo "  kubectl port-forward -n default svc/haproxy 9090:9090"
-echo "  → Access at: http://localhost:9090"
+echo -e "${GREEN}# Terminal 1: ModSecurity WAF (Public Entry Point)${NC}"
+echo "  kubectl port-forward -n default svc/modsecurity-waf 8080:80"
+echo "  → Access at: http://localhost:8080"
+echo "  → All traffic goes: WAF → HAProxy → Backend Clusters"
+echo "  → Note: HAProxy is internal-only (ClusterIP), not directly accessible"
 echo ""
 echo -e "${GREEN}# Terminal 2: Grafana${NC}"
 echo "  kubectl port-forward -n monitoring svc/grafana 3000:3000"
@@ -273,9 +352,11 @@ echo "  → Access at: http://localhost:9091"
 echo "  → Test query: sum(kube_pod_container_resource_requests{resource=\"cpu\"}) by (pod, namespace)"
 echo ""
 echo -e "${YELLOW}Option 2: NodePort (if available)${NC}"
-echo "  HAProxy:    http://<node-ip>:30090"
+echo "  WAF:        http://<node-ip>:30080"
 echo "  Grafana:    http://<node-ip>:30300"
 echo "  Prometheus: http://<node-ip>:30091"
+echo ""
+echo -e "${BLUE}Architecture: User → WAF (port 8080) → HAProxy (internal) → Backend Clusters${NC}"
 echo ""
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
@@ -285,12 +366,14 @@ echo ""
 # ============================================================================
 if [ -t 0 ]; then
     # Only prompt if running interactively (stdin is a terminal)
-    read -p "Do you want to start port forwarding for HAProxy now? (y/n) " -n 1 -r
+    read -p "Do you want to start port forwarding for WAF now? (y/n) " -n 1 -r
     echo
     if [[ $REPLY =~ ^[Yy]$ ]]; then
-        echo -e "${GREEN}Starting port forward for HAProxy on port 9090...${NC}"
+        echo -e "${GREEN}Starting port forward for WAF on port 8080...${NC}"
+        echo -e "${BLUE}Access your application at: http://localhost:8080${NC}"
+        echo -e "${BLUE}Traffic flow: WAF → HAProxy → Backend Clusters${NC}"
         echo -e "${YELLOW}Press Ctrl+C to stop${NC}"
-        $KUBECTL_CMD_HAPROXY port-forward -n default svc/haproxy 9090:9090
+        $KUBECTL_CMD_HAPROXY port-forward -n default svc/modsecurity-waf 8080:80
     fi
 else
     echo -e "${BLUE}Running in non-interactive mode, skipping port-forward prompt${NC}"
