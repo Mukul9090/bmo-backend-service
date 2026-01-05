@@ -154,39 +154,39 @@ jobs:
             fi
           }
           
-          echo "🔍 Verifying WAF deployment..."
+          echo "Verifying WAF deployment..."
           
           # Check if WAF deployment exists
           if ! kubectl_cmd "$HAPROXY_CTX" get deployment modsecurity-waf -n default &>/dev/null; then
-            echo "❌ WAF deployment not found"
+            echo "ERROR: WAF deployment not found"
             echo "Available deployments:"
             kubectl_cmd "$HAPROXY_CTX" get deployments -n default || true
-            echo "⚠️  WAF deployment failed or was not created"
-            echo "⚠️  WAF tests will be skipped" >> $GITHUB_STEP_SUMMARY
+            echo "WARNING: WAF deployment failed or was not created"
+            echo "WARNING: WAF tests will be skipped" >> $GITHUB_STEP_SUMMARY
             exit 0
           fi
           
           # Check if WAF service exists
           if ! kubectl_cmd "$HAPROXY_CTX" get svc modsecurity-waf -n default &>/dev/null; then
-            echo "❌ WAF service not found"
+            echo "ERROR: WAF service not found"
             echo "Available services:"
             kubectl_cmd "$HAPROXY_CTX" get svc -n default || true
-            echo "⚠️  WAF service was not created"
-            echo "⚠️  WAF tests will be skipped" >> $GITHUB_STEP_SUMMARY
+            echo "WARNING: WAF service was not created"
+            echo "WARNING: WAF tests will be skipped" >> $GITHUB_STEP_SUMMARY
             exit 0
           fi
           
           # Wait for WAF pods to be ready
-          echo "⏳ Waiting for WAF pods to be ready..."
+          echo "Waiting for WAF pods to be ready..."
           if kubectl_cmd "$HAPROXY_CTX" wait --for=condition=available --timeout=120s deployment/modsecurity-waf -n default 2>/dev/null; then
-            echo "✅ WAF deployment is ready"
+            echo "SUCCESS: WAF deployment is ready"
             kubectl_cmd "$HAPROXY_CTX" get pods -l app=modsecurity-waf -n default || true
           else
-            echo "⚠️  WAF pods not ready after 120s, but continuing..."
+            echo "WARNING: WAF pods not ready after 120s, but continuing..."
             kubectl_cmd "$HAPROXY_CTX" get pods -l app=modsecurity-waf -n default || true
           fi
           
-          echo "✅ WAF deployment verified" >> $GITHUB_STEP_SUMMARY
+          echo "SUCCESS: WAF deployment verified" >> $GITHUB_STEP_SUMMARY
 
       - name: Deploy and verify network policies
         run: |
@@ -205,19 +205,19 @@ jobs:
             fi
           }
           
-          echo "🔒 Deploying network policies..."
+          echo "Deploying network policies..."
           
           # Deploy network policies for hot cluster
           kubectl_cmd "$HOT_CTX" apply -f k8s/cluster-hot/network-policy.yaml
-          echo "✅ Network policy applied to hot cluster"
+          echo "SUCCESS: Network policy applied to hot cluster"
           
           # Deploy network policies for standby cluster
           kubectl_cmd "$STANDBY_CTX" apply -f k8s/cluster-standby/network-policy.yaml
-          echo "✅ Network policy applied to standby cluster"
+          echo "SUCCESS: Network policy applied to standby cluster"
           
           # Deploy network policy for HAProxy
           kubectl_cmd "$HAPROXY_CTX" apply -f k8s/haproxy/network-policy.yaml
-          echo "✅ Network policy applied to HAProxy"
+          echo "SUCCESS: Network policy applied to HAProxy"
           
           # Verify network policies are applied
           echo ""
@@ -226,7 +226,7 @@ jobs:
           kubectl_cmd "$STANDBY_CTX" get networkpolicies -n default || echo "No network policies in standby cluster"
           kubectl_cmd "$HAPROXY_CTX" get networkpolicies -n default || echo "No network policies in HAProxy cluster"
           
-          echo "✅ Network policies deployed and verified" >> $GITHUB_STEP_SUMMARY
+          echo "SUCCESS: Network policies deployed and verified" >> $GITHUB_STEP_SUMMARY
 
       - name: Run WAF Security Tests
         run: |
@@ -243,48 +243,48 @@ jobs:
             fi
           }
           
-          echo "🛡️ Running WAF security tests..."
+          echo "Running WAF security tests..."
           
           # Check if WAF service exists (should have been verified in previous step)
           if ! kubectl_cmd "$HAPROXY_CTX" get svc modsecurity-waf -n default &>/dev/null; then
-            echo "⚠️  WAF service not found, skipping tests"
+            echo "WARNING: WAF service not found, skipping tests"
             echo "This should not happen if deployment succeeded. Checking status:"
             kubectl_cmd "$HAPROXY_CTX" get svc -n default || true
             kubectl_cmd "$HAPROXY_CTX" get deployment modsecurity-waf -n default || true
-            echo "⚠️  WAF tests skipped - service not available" >> $GITHUB_STEP_SUMMARY
+            echo "WARNING: WAF tests skipped - service not available" >> $GITHUB_STEP_SUMMARY
             exit 0
           fi
           
           # Wait for WAF pods to be ready
-          echo "⏳ Waiting for WAF pods to be ready..."
+          echo "Waiting for WAF pods to be ready..."
           sleep 5
           
           # Verify at least one WAF pod is running
           WAF_PODS=$(kubectl_cmd "$HAPROXY_CTX" get pods -l app=modsecurity-waf -n default -o jsonpath='{.items[*].status.phase}' 2>/dev/null || echo "")
           if [[ ! "$WAF_PODS" =~ "Running" ]]; then
-            echo "⚠️  No WAF pods are running, checking status:"
+            echo "WARNING: No WAF pods are running, checking status:"
             kubectl_cmd "$HAPROXY_CTX" get pods -l app=modsecurity-waf -n default || true
-            echo "⚠️  WAF tests skipped - pods not running" >> $GITHUB_STEP_SUMMARY
+            echo "WARNING: WAF tests skipped - pods not running" >> $GITHUB_STEP_SUMMARY
             exit 0
           fi
           
-          echo "✅ WAF service and pods are ready"
+          echo "SUCCESS: WAF service and pods are ready"
           
           # Make script executable
           chmod +x run_waf_test.sh
           
           # Run the WAF test script with context (it handles port-forward and test execution)
-          echo "🚀 Running WAF security tests using run_waf_test.sh..."
+          echo "Running WAF security tests using run_waf_test.sh..."
           if [ -n "$HAPROXY_CTX" ]; then
             ./run_waf_test.sh "$HAPROXY_CTX" || {
-              echo "❌ WAF tests failed"
+              echo "ERROR: WAF tests failed"
               echo "Checking WAF pod status:"
               kubectl_cmd "$HAPROXY_CTX" get pods -l app=modsecurity-waf -n default || true
               exit 1
             }
           else
             ./run_waf_test.sh || {
-              echo "❌ WAF tests failed"
+              echo "ERROR: WAF tests failed"
               echo "Checking WAF pod status:"
               kubectl_cmd "$HAPROXY_CTX" get pods -l app=modsecurity-waf -n default || true
               exit 1
@@ -292,7 +292,7 @@ jobs:
           fi
           
           echo ""
-          echo "✅ WAF security tests passed" >> $GITHUB_STEP_SUMMARY
+          echo "SUCCESS: WAF security tests passed" >> $GITHUB_STEP_SUMMARY
 
       - name: Setup persistent HAProxy port-forward
         run: |
@@ -336,11 +336,11 @@ jobs:
           # Wait a moment and verify it's running
           sleep 5
           if pgrep -f "keep-haproxy-forward" > /dev/null; then
-            echo "✅ Persistent HAProxy port-forward started successfully" >> $GITHUB_STEP_SUMMARY
-            echo "✅ HAProxy accessible at http://localhost:9090" >> $GITHUB_STEP_SUMMARY
-            echo "✅ Port-forward will persist after workflow completes" >> $GITHUB_STEP_SUMMARY
+            echo "SUCCESS: Persistent HAProxy port-forward started successfully" >> $GITHUB_STEP_SUMMARY
+            echo "SUCCESS: HAProxy accessible at http://localhost:9090" >> $GITHUB_STEP_SUMMARY
+            echo "SUCCESS: Port-forward will persist after workflow completes" >> $GITHUB_STEP_SUMMARY
           else
-            echo "⚠️  Port-forward script started but may not be running" >> $GITHUB_STEP_SUMMARY
+            echo "WARNING: Port-forward script started but may not be running" >> $GITHUB_STEP_SUMMARY
           fi
 
       - name: Deployment summary
@@ -360,7 +360,7 @@ jobs:
             fi
           }
           
-          echo "## 🚀 Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "## Deployment Summary" >> $GITHUB_STEP_SUMMARY
           echo "Using contexts - Hot: ${HOT_CTX:-<default>}, Standby: ${STANDBY_CTX:-<default>}, HAProxy: ${HAPROXY_CTX:-<default>}" >> $GITHUB_STEP_SUMMARY
           kubectl_cmd "$HOT_CTX" get pods -n default -l app=backend-service >> $GITHUB_STEP_SUMMARY || true
           kubectl_cmd "$STANDBY_CTX" get pods -n default -l app=backend-service >> $GITHUB_STEP_SUMMARY || true
