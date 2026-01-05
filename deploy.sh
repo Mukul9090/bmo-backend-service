@@ -40,7 +40,7 @@ if [ -n "$HAPROXY_CONTEXT" ]; then
     echo -e "${BLUE}Using HAProxy cluster context: $HAPROXY_CONTEXT${NC}"
 fi
 
-echo -e "${BLUE}🚀 Starting deployment...${NC}"
+echo -e "${BLUE}Starting deployment...${NC}"
 echo -e "${BLUE}Docker Image: $DOCKER_IMAGE:$DOCKER_TAG${NC}"
 echo ""
 
@@ -61,12 +61,12 @@ wait_for_pods() {
     local selector=$2
     local timeout=${3:-120}
     
-    echo -e "${YELLOW}⏳ Waiting for pods with selector '$selector' in namespace '$namespace'...${NC}"
+    echo -e "${YELLOW}Waiting for pods with selector '$selector' in namespace '$namespace'...${NC}"
     if kubectl wait --for=condition=ready --timeout=${timeout}s pod -l "$selector" -n "$namespace" 2>/dev/null; then
-        echo -e "${GREEN}✅ Pods are ready${NC}"
+        echo -e "${GREEN}Pods are ready${NC}"
         return 0
     else
-        echo -e "${YELLOW}⚠️  Some pods may not be ready yet${NC}"
+        echo -e "${YELLOW}WARNING: Some pods may not be ready yet${NC}"
         return 1
     fi
 }
@@ -74,26 +74,26 @@ wait_for_pods() {
 # ============================================================================
 # Step 1: Deploy Monitoring Namespace
 # ============================================================================
-echo -e "${BLUE}📊 Step 1: Deploying monitoring namespace...${NC}"
+echo -e "${BLUE}Step 1: Deploying monitoring namespace...${NC}"
 kubectl apply -f monitoring/namespace.yaml
-echo -e "${GREEN}✅ Monitoring namespace created${NC}"
+echo -e "${GREEN}SUCCESS: Monitoring namespace created${NC}"
 echo ""
 
 # ============================================================================
 # Step 2: Deploy Prometheus
 # ============================================================================
-echo -e "${BLUE}📊 Step 2: Deploying Prometheus...${NC}"
+echo -e "${BLUE}Step 2: Deploying Prometheus...${NC}"
 kubectl apply -f monitoring/prometheus/serviceaccount.yaml
 kubectl apply -f monitoring/prometheus/configmap.yaml
 kubectl apply -f monitoring/prometheus/deployment.yaml
 kubectl apply -f monitoring/prometheus/service.yaml
-echo -e "${GREEN}✅ Prometheus deployed${NC}"
+echo -e "${GREEN}SUCCESS: Prometheus deployed${NC}"
 echo ""
 
 # ============================================================================
 # Step 2.5: Deploy kube-state-metrics
 # ============================================================================
-echo -e "${BLUE}📊 Step 2.5: Deploying kube-state-metrics...${NC}"
+echo -e "${BLUE}Step 2.5: Deploying kube-state-metrics...${NC}"
 kubectl apply -f monitoring/kube-state-metrics/serviceaccount.yaml
 kubectl apply -f monitoring/kube-state-metrics/deployment.yaml
 kubectl apply -f monitoring/kube-state-metrics/service.yaml
@@ -101,45 +101,45 @@ kubectl apply -f monitoring/kube-state-metrics/service.yaml
 # Wait for kube-state-metrics to be ready
 wait_for_pods "monitoring" "app.kubernetes.io/name=kube-state-metrics" 120
 
-echo -e "${GREEN}✅ kube-state-metrics deployed and ready${NC}"
+echo -e "${GREEN}SUCCESS: kube-state-metrics deployed and ready${NC}"
 echo ""
 
 # ============================================================================
 # Step 3: Deploy Grafana
 # ============================================================================
-echo -e "${BLUE}📊 Step 3: Deploying Grafana...${NC}"
+echo -e "${BLUE}Step 3: Deploying Grafana...${NC}"
 kubectl apply -f monitoring/grafana/configmap-datasources.yaml
 kubectl apply -f monitoring/grafana/deployment.yaml
 kubectl apply -f monitoring/grafana/service.yaml
-echo -e "${GREEN}✅ Grafana deployed${NC}"
+echo -e "${GREEN}SUCCESS: Grafana deployed${NC}"
 echo ""
 
 # ============================================================================
 # Step 4: Deploy Hot Cluster
 # ============================================================================
-echo -e "${BLUE}🔥 Step 4: Deploying Hot Cluster...${NC}"
+echo -e "${BLUE}Step 4: Deploying Hot Cluster...${NC}"
 $KUBECTL_CMD_HOT apply -f k8s/cluster-hot/configmap.yaml
 sed "s|image: mukul1599/backend-service$|image: $DOCKER_IMAGE:$DOCKER_TAG|" k8s/cluster-hot/deployment.yaml | $KUBECTL_CMD_HOT apply -f -
 $KUBECTL_CMD_HOT apply -f k8s/cluster-hot/service.yaml
 $KUBECTL_CMD_HOT apply -f k8s/cluster-hot/network-policy.yaml
-echo -e "${GREEN}✅ Hot cluster deployed${NC}"
+echo -e "${GREEN}SUCCESS: Hot cluster deployed${NC}"
 echo ""
 
 # ============================================================================
 # Step 5: Deploy Standby Cluster
 # ============================================================================
-echo -e "${BLUE}❄️  Step 5: Deploying Standby Cluster...${NC}"
+echo -e "${BLUE}Step 5: Deploying Standby Cluster...${NC}"
 $KUBECTL_CMD_STANDBY apply -f k8s/cluster-standby/configmap.yaml
 sed "s|image: mukul1599/backend-service$|image: $DOCKER_IMAGE:$DOCKER_TAG|" k8s/cluster-standby/deployment.yaml | $KUBECTL_CMD_STANDBY apply -f -
 $KUBECTL_CMD_STANDBY apply -f k8s/cluster-standby/service.yaml
 $KUBECTL_CMD_STANDBY apply -f k8s/cluster-standby/network-policy.yaml
-echo -e "${GREEN}✅ Standby cluster deployed${NC}"
+echo -e "${GREEN}SUCCESS: Standby cluster deployed${NC}"
 echo ""
 
 # ============================================================================
 # Step 6: Wait for services to get IPs
 # ============================================================================
-echo -e "${YELLOW}⏳ Waiting for services to be ready...${NC}"
+echo -e "${YELLOW}Waiting for services to be ready...${NC}"
 sleep 5
 
 # Wait for backend pods to be ready
@@ -158,14 +158,14 @@ fi
 # ============================================================================
 # Step 6.5: Get Service IPs and Deploy HAProxy (Internal Only)
 # ============================================================================
-echo -e "${BLUE}⚖️  Step 6.5: Deploying HAProxy (Internal Only - ClusterIP)...${NC}"
+echo -e "${BLUE}Step 6.5: Deploying HAProxy (Internal Only - ClusterIP)...${NC}"
 
 # Get service ClusterIPs
 HOT_IP=$($KUBECTL_CMD_HOT get svc backend-service-hot -n default -o jsonpath='{.spec.clusterIP}' 2>/dev/null || echo "")
 STANDBY_IP=$($KUBECTL_CMD_STANDBY get svc backend-service -n default -o jsonpath='{.spec.clusterIP}' 2>/dev/null || echo "")
 
 if [ -z "$HOT_IP" ] || [ -z "$STANDBY_IP" ]; then
-    echo -e "${RED}❌ Error: Could not get service IPs${NC}"
+    echo -e "${RED}ERROR: Could not get service IPs${NC}"
     echo "Hot IP: $HOT_IP"
     echo "Standby IP: $STANDBY_IP"
     exit 1
@@ -183,12 +183,12 @@ $KUBECTL_CMD_HAPROXY apply -f k8s/haproxy/deployment.yaml
 $KUBECTL_CMD_HAPROXY apply -f k8s/haproxy/service.yaml
 $KUBECTL_CMD_HAPROXY apply -f k8s/haproxy/network-policy.yaml
 
-echo -e "${GREEN}✅ HAProxy deployed (ClusterIP - internal only)${NC}"
+echo -e "${GREEN}SUCCESS: HAProxy deployed (ClusterIP - internal only)${NC}"
 echo -e "${BLUE}   Note: HAProxy is NOT exposed externally. All traffic must go through WAF.${NC}"
 echo ""
 
 # Wait for HAProxy to be ready
-echo -e "${YELLOW}⏳ Waiting for HAProxy to be ready...${NC}"
+echo -e "${YELLOW}Waiting for HAProxy to be ready...${NC}"
 if [ -n "$HAPROXY_CONTEXT" ]; then
     $KUBECTL_CMD_HAPROXY wait --for=condition=ready --timeout=60s pod -l app=haproxy -n default 2>/dev/null || true
 else
@@ -198,24 +198,41 @@ fi
 # ============================================================================
 # Step 7: Deploy ModSecurity WAF (Public Entry Point)
 # ============================================================================
-echo -e "${BLUE}🛡️  Step 7: Deploying ModSecurity WAF (Public Entry Point)...${NC}"
+echo -e "${BLUE}Step 7: Deploying ModSecurity WAF (Public Entry Point)...${NC}"
+
+# Get HAProxy ClusterIP for WAF configuration
+HAPROXY_CLUSTER_IP=$($KUBECTL_CMD_HAPROXY get svc haproxy -n default -o jsonpath='{.spec.clusterIP}' 2>/dev/null || echo "")
+
+if [ -z "$HAPROXY_CLUSTER_IP" ]; then
+    echo -e "${RED}ERROR: Could not get HAProxy ClusterIP${NC}"
+    echo -e "${YELLOW}Waiting for HAProxy service to be ready...${NC}"
+    sleep 5
+    HAPROXY_CLUSTER_IP=$($KUBECTL_CMD_HAPROXY get svc haproxy -n default -o jsonpath='{.spec.clusterIP}' 2>/dev/null || echo "")
+    if [ -z "$HAPROXY_CLUSTER_IP" ]; then
+        echo -e "${RED}ERROR: HAProxy ClusterIP still not available${NC}"
+        exit 1
+    fi
+fi
+
+echo -e "${GREEN}HAProxy ClusterIP: ${HAPROXY_CLUSTER_IP}:9090${NC}"
 
 # Deploy ModSecurity WAF ConfigMaps first
 $KUBECTL_CMD_HAPROXY apply -f k8s/waf/configmap-modsecurity.yaml
-$KUBECTL_CMD_HAPROXY apply -f k8s/waf/configmap-nginx.yaml
 
-# Deploy WAF (uses service DNS for HAProxy backend - no hardcoded IPs)
-echo -e "${BLUE}Configuring WAF to proxy to HAProxy via service DNS${NC}"
+# Update WAF nginx config with HAProxy ClusterIP (DNS resolution is unreliable)
+echo -e "${BLUE}Configuring WAF to proxy to HAProxy via ClusterIP (${HAPROXY_CLUSTER_IP})${NC}"
+sed "s|<HAPROXY_CLUSTER_IP>|${HAPROXY_CLUSTER_IP}|g" k8s/waf/configmap-nginx.yaml | \
+  $KUBECTL_CMD_HAPROXY apply -f -
 $KUBECTL_CMD_HAPROXY apply -f k8s/waf/deployment.yaml
 
 $KUBECTL_CMD_HAPROXY apply -f k8s/waf/service.yaml
 $KUBECTL_CMD_HAPROXY apply -f k8s/waf/network-policy.yaml
 
-echo -e "${GREEN}✅ ModSecurity WAF manifests applied${NC}"
+echo -e "${GREEN}SUCCESS: ModSecurity WAF manifests applied${NC}"
 echo ""
 
 # Wait for WAF pods to be ready with retry logic
-echo -e "${YELLOW}⏳ Waiting for WAF pods to be ready...${NC}"
+echo -e "${YELLOW}Waiting for WAF pods to be ready...${NC}"
 MAX_RETRIES=5
 RETRY_COUNT=0
 WAF_READY=false
@@ -234,7 +251,7 @@ while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
     fi
     
     RETRY_COUNT=$((RETRY_COUNT + 1))
-    echo -e "${YELLOW}⚠️  WAF pods not ready yet, retrying... ($RETRY_COUNT/$MAX_RETRIES)${NC}"
+    echo -e "${YELLOW}WARNING: WAF pods not ready yet, retrying... ($RETRY_COUNT/$MAX_RETRIES)${NC}"
     
     # Check for pod errors
     FAILED_PODS=$($KUBECTL_CMD_HAPROXY get pods -l app=modsecurity-waf -n default -o jsonpath='{.items[?(@.status.phase!="Running")].metadata.name}' 2>/dev/null || echo "")
@@ -252,18 +269,18 @@ while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
 done
 
 if [ "$WAF_READY" = true ]; then
-    echo -e "${GREEN}✅ ModSecurity WAF pods are ready${NC}"
+    echo -e "${GREEN}SUCCESS: ModSecurity WAF pods are ready${NC}"
     
     # Verify WAF pods are actually running (not crashing)
     CRASHING_PODS=$($KUBECTL_CMD_HAPROXY get pods -l app=modsecurity-waf -n default -o jsonpath='{.items[?(@.status.containerStatuses[0].ready==false)].metadata.name}' 2>/dev/null || echo "")
     if [ -n "$CRASHING_PODS" ]; then
-        echo -e "${RED}❌ Warning: Some WAF pods are not ready${NC}"
+        echo -e "${RED}ERROR: Warning: Some WAF pods are not ready${NC}"
         $KUBECTL_CMD_HAPROXY get pods -l app=modsecurity-waf -n default 2>/dev/null || true
     else
-        echo -e "${GREEN}✅ All WAF pods are running successfully${NC}"
+        echo -e "${GREEN}SUCCESS: All WAF pods are running successfully${NC}"
     fi
 else
-    echo -e "${RED}❌ Warning: WAF pods did not become ready after $MAX_RETRIES attempts${NC}"
+    echo -e "${RED}ERROR: Warning: WAF pods did not become ready after $MAX_RETRIES attempts${NC}"
     echo -e "${YELLOW}Checking WAF pod status...${NC}"
     $KUBECTL_CMD_HAPROXY get pods -l app=modsecurity-waf -n default 2>/dev/null || true
     echo -e "${YELLOW}This may be normal if WAF is still starting up. Continuing deployment...${NC}"
@@ -273,8 +290,8 @@ echo ""
 # ============================================================================
 # Step 7.5: Verify Prometheus can query kube-state-metrics
 # ============================================================================
-echo -e "${BLUE}🔍 Step 7.5: Verifying Prometheus metrics...${NC}"
-echo -e "${YELLOW}⏳ Waiting for Prometheus to discover kube-state-metrics...${NC}"
+echo -e "${BLUE}Step 7.5: Verifying Prometheus metrics...${NC}"
+echo -e "${YELLOW}Waiting for Prometheus to discover kube-state-metrics...${NC}"
 sleep 10
 
 # Wait for Prometheus to be ready
@@ -287,19 +304,19 @@ if [ -n "$PROM_POD" ]; then
     QUERY_RESULT=$(kubectl exec -n monitoring "$PROM_POD" -- wget -qO- 'http://localhost:9090/api/v1/query?query=kube_pod_container_resource_requests{resource="cpu"}' 2>/dev/null | python3 -c "import sys, json; data=json.load(sys.stdin); print('success' if data.get('status')=='success' and len(data.get('data',{}).get('result',[])) > 0 else 'failed')" 2>/dev/null || echo "failed")
     
     if [ "$QUERY_RESULT" = "success" ]; then
-        echo -e "${GREEN}✅ Prometheus can query kube-state-metrics successfully${NC}"
+        echo -e "${GREEN}SUCCESS: Prometheus can query kube-state-metrics successfully${NC}"
     else
-        echo -e "${YELLOW}⚠️  Prometheus query test inconclusive (may need more time to scrape)${NC}"
+        echo -e "${YELLOW}WARNING: Prometheus query test inconclusive (may need more time to scrape)${NC}"
     fi
 else
-    echo -e "${YELLOW}⚠️  Prometheus pod not found, skipping query verification${NC}"
+    echo -e "${YELLOW}WARNING: Prometheus pod not found, skipping query verification${NC}"
 fi
 echo ""
 
 # ============================================================================
 # Step 8: Display Status
 # ============================================================================
-echo -e "${BLUE}📋 Deployment Status:${NC}"
+echo -e "${BLUE}Deployment Status:${NC}"
 echo ""
 
 echo -e "${YELLOW}Backend Services:${NC}"
@@ -325,10 +342,10 @@ echo ""
 # ============================================================================
 # Step 9: Port Forwarding Instructions
 # ============================================================================
-echo -e "${GREEN}✅ Deployment complete!${NC}"
+echo -e "${GREEN}SUCCESS: Deployment complete!${NC}"
 echo ""
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${BLUE}📡 Access Instructions:${NC}"
+echo -e "${BLUE}Access Instructions:${NC}"
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
 echo -e "${YELLOW}Option 1: Port Forwarding (Recommended)${NC}"
@@ -362,19 +379,33 @@ echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━�
 echo ""
 
 # ============================================================================
-# Optional: Auto-start port forwarding (only in interactive mode)
+# Auto-start port forwarding for WAF
 # ============================================================================
-if [ -t 0 ]; then
-    # Only prompt if running interactively (stdin is a terminal)
-    read -p "Do you want to start port forwarding for WAF now? (y/n) " -n 1 -r
-    echo
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        echo -e "${GREEN}Starting port forward for WAF on port 8080...${NC}"
+# Kill any existing port-forward on port 8080
+pkill -f "kubectl port-forward.*modsecurity-waf.*8080" 2>/dev/null || true
+sleep 1
+
+# Start port-forward in background
+echo -e "${BLUE}Starting port forward for WAF on port 8080 (background)...${NC}"
+$KUBECTL_CMD_HAPROXY port-forward -n default svc/modsecurity-waf 8080:80 --address=127.0.0.1 > /tmp/waf-portforward.log 2>&1 &
+PF_PID=$!
+
+# Wait a moment for port-forward to initialize
+sleep 2
+
+# Verify port-forward is working
+if kill -0 $PF_PID 2>/dev/null; then
+    # Test connection
+    if curl -s -f http://127.0.0.1:8080/waf-health > /dev/null 2>&1; then
+        echo -e "${GREEN}SUCCESS: Port-forward active on http://localhost:8080${NC}"
         echo -e "${BLUE}Access your application at: http://localhost:8080${NC}"
         echo -e "${BLUE}Traffic flow: WAF → HAProxy → Backend Clusters${NC}"
-        echo -e "${YELLOW}Press Ctrl+C to stop${NC}"
-        $KUBECTL_CMD_HAPROXY port-forward -n default svc/modsecurity-waf 8080:80
+    else
+        echo -e "${YELLOW}WARNING: Port-forward started but connection test failed${NC}"
+        echo -e "${YELLOW}Port-forward may still be initializing. Check logs: cat /tmp/waf-portforward.log${NC}"
     fi
 else
-    echo -e "${BLUE}Running in non-interactive mode, skipping port-forward prompt${NC}"
+    echo -e "${RED}ERROR: Port-forward failed to start${NC}"
+    echo -e "${YELLOW}Check logs: cat /tmp/waf-portforward.log${NC}"
 fi
+echo ""

@@ -23,9 +23,10 @@ data:
         # Main location - proxy to HAProxy
         location / {
 
-            # Proxy to HAProxy (using variable for dynamic resolution)
-            set $backend "http://haproxy.default.svc.cluster.local:9090";
-            proxy_pass $backend;
+            # Proxy to HAProxy using ClusterIP (DNS resolution is unreliable in this environment)
+            # ClusterIP is stable and doesn't require DNS resolution
+            # IP is dynamically replaced during deployment
+            proxy_pass http://<HAPROXY_CLUSTER_IP>:9090;
             proxy_set_header Host $host;
             proxy_set_header X-Real-IP $remote_addr;
             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
