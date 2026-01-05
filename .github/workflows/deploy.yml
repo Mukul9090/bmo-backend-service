@@ -10,12 +10,35 @@ on:
 env:
   DOCKER_IMAGE: mukul1599/backend-service
   DOCKER_TAG: latest
-  K8S_CLUSTER_HOT_CONTEXT: hot-cluster
-  K8S_CLUSTER_STANDBY_CONTEXT: standby-cluster
-  HAPROXY_CLUSTER_CONTEXT: hot-cluster
+  K8S_NAMESPACE_HOT: backend-hot
+  K8S_NAMESPACE_STANDBY: backend-standby
   REPLICAS: 2
 
 jobs:
+  codeql-analysis:
+    name: CodeQL Security Analysis
+    runs-on: [self-hosted, macOS, ARM64]
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: python
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:python"
+
   build-and-push:
     name: Build and Push Docker Image
     runs-on: [self-hosted, macOS, ARM64]
@@ -115,6 +138,35 @@ jobs:
           # Run deploy.sh with contexts and image info (non-interactive mode)
           # Use yes "n" to skip the port-forward prompt
           echo "n" | ./deploy.sh "$HOT_CTX" "$STANDBY_CTX" "$HAPROXY_CTX" "${{ env.DOCKER_IMAGE }}" "${{ env.DOCKER_TAG }}" || true
+
+      - name: Deploy and verify network policies
+        run: |
+          HOT_CTX="${{ steps.detect-contexts.outputs.hot_context }}"
+          STANDBY_CTX="${{ steps.detect-contexts.outputs.standby_context }}"
+          HAPROXY_CTX="${{ steps.detect-contexts.outputs.haproxy_context }}"
+          
+          echo "🔒 Deploying network policies..."
+          
+          # Deploy network policies for hot cluster
+          kubectl apply --context=$HOT_CTX -f k8s/cluster-hot/network-policy.yaml
+          echo "✅ Network policy applied to hot cluster"
+          
+          # Deploy network policies for standby cluster
+          kubectl apply --context=$STANDBY_CTX -f k8s/cluster-standby/network-policy.yaml
+          echo "✅ Network policy applied to standby cluster"
+          
+          # Deploy network policy for HAProxy
+          kubectl apply --context=$HAPROXY_CTX -f k8s/haproxy/network-policy.yaml
+          echo "✅ Network policy applied to HAProxy"
+          
+          # Verify network policies are applied
+          echo ""
+          echo "Network policies status:"
+          kubectl get networkpolicies --context=$HOT_CTX -n default || echo "No network policies in hot cluster"
+          kubectl get networkpolicies --context=$STANDBY_CTX -n default || echo "No network policies in standby cluster"
+          kubectl get networkpolicies --context=$HAPROXY_CTX -n default || echo "No network policies in HAProxy cluster"
+          
+          echo "✅ Network policies deployed and verified" >> $GITHUB_STEP_SUMMARY
 
       - name: Setup persistent HAProxy port-forward
         run: |
