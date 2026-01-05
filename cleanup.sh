@@ -31,7 +31,7 @@ if [ -n "$HAPROXY_CONTEXT" ]; then
     KUBECTL_CMD_HAPROXY="kubectl --context=$HAPROXY_CONTEXT"
 fi
 
-echo -e "${YELLOW}🧹 Cleaning up all deployments...${NC}"
+echo -e "${YELLOW}Cleaning up all deployments...${NC}"
 echo ""
 
 # Stop any running port forwards
@@ -87,4 +87,4 @@ kubectl delete -f monitoring/namespace.yaml --ignore-not-found=true || true
 echo -e "${YELLOW}Waiting for resources to be deleted...${NC}"
 sleep 5
 
-echo -e "${GREEN}✅ Cleanup complete!${NC}"
+echo -e "${GREEN}SUCCESS: Cleanup complete!${NC}"

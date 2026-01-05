@@ -29,7 +29,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "🔧 Setting up port-forward for WAF service..."
+echo "Setting up port-forward for WAF service..."
 
 # Initialize variables
 SERVICE_EXISTS=false
@@ -63,13 +63,13 @@ sleep 2
 
 # Check if port-forward process is running
 if ! kill -0 $PF_PID 2>/dev/null; then
-    echo "❌ Port-forward process failed to start"
+    echo "ERROR: Port-forward process failed to start"
     cat /tmp/waf-portforward.log 2>/dev/null || true
     exit 1
 fi
 
 # Try to connect with retries
-echo "⏳ Waiting for port-forward to be ready..."
+echo "Waiting for port-forward to be ready..."
 MAX_RETRIES=10
 RETRY_COUNT=0
 PORT_READY=false
@@ -96,7 +96,7 @@ while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
 done
 
 if [ "$PORT_READY" = false ]; then
-    echo "❌ Port-forward failed to connect after $MAX_RETRIES attempts"
+    echo "ERROR: Port-forward failed to connect after $MAX_RETRIES attempts"
     echo "Port-forward log:"
     cat /tmp/waf-portforward.log 2>/dev/null || true
     echo ""
@@ -108,9 +108,9 @@ if [ "$PORT_READY" = false ]; then
     exit 1
 fi
 
-echo "✅ Port-forward active on localhost:8080"
+echo "SUCCESS: Port-forward active on localhost:8080"
 echo ""
-echo "🚀 Running WAF security tests..."
+echo "Running WAF security tests..."
 echo ""
 
 # Run the test with WAF_URL environment variable set
@@ -118,5 +118,5 @@ WAF_URL="http://localhost:8080" python3 test_waf.py
 
 # Cleanup is handled by trap
 echo ""
-echo "✅ Test complete! Check ModSecurity logs with:"
+echo "SUCCESS: Test complete! Check ModSecurity logs with:"
 echo "   $KUBECTL_CMD exec -n default deployment/modsecurity-waf -- tail -100 /var/log/modsec_audit.log"
