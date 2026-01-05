@@ -69,16 +69,6 @@ For detailed deployment guides, see [docs/](docs/).
 - `GET /healthz` - Health check endpoint
 - `GET /` - Root endpoint with service info
 
-## Testing
-
-```bash
-# Run unit tests
-pytest
-
-# Run with coverage
-pytest --cov=server --cov-report=html
-```
-
 ## Documentation
 
 - [Deployment Guide](docs/DEPLOY.md) - General Kubernetes deployment
