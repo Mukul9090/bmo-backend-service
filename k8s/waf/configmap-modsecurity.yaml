@@ -11,10 +11,8 @@ data:
     SecResponseBodyAccess On
     SecResponseBodyMimeType text/plain text/html text/xml application/json
     
-    # OWASP CRS Rules
-    # Note: These paths should exist in the owasp/modsecurity-crs:nginx-alpine image
-    Include /etc/nginx/modsec/crs/crs-setup.conf
-    Include /etc/nginx/modsec/crs/rules/*.conf
+    # OWASP CRS Rules are handled by the image's entrypoint script
+    # The entrypoint automatically includes CRS rules from the image
     
     # Custom Security Rules
     # Block common bot user agents
@@ -27,7 +25,7 @@ data:
     
     # Rate limiting (basic)
     SecAction \
-        "id:1002,phase:1,nolog,pass,initcol:ip=%{REMOTE_ADDR},initcol:user=%{REMOTE_ADDR},setvar:ip.requests=+1"
+        "id:1002,phase:1,nolog,pass,initcol:ip=%{REMOTE_ADDR},setvar:ip.requests=+1"
     
     SecRule IP:REQUESTS "@gt 100" \
         "id:1003,phase:1,deny,status:429,msg:'Rate limit exceeded',logdata:'%{IP.requests}'"

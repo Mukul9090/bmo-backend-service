@@ -47,9 +47,26 @@ spec:
         - name: modsec-logs
           mountPath: /var/log
         - name: nginx-config
-          mountPath: /etc/nginx/conf.d
+          mountPath: /tmp/nginx-config
         - name: modsecurity-config
-          mountPath: /etc/nginx/modsec
+          mountPath: /etc/nginx/modsec/modsecurity.conf
+          subPath: modsecurity.conf
+          readOnly: true
+        command: ['/bin/sh', '-c']
+        args:
+        - |
+          # Run the entrypoint script to set up nginx (it will exit, so we catch it)
+          /docker-entrypoint.sh nginx -g "daemon off;" &
+          ENTRYPOINT_PID=$!
+          # Wait for entrypoint to finish setup
+          sleep 3
+          # Copy our custom config over the generated one
+          cp /tmp/nginx-config/default.conf /etc/nginx/conf.d/default.conf
+          # Kill the background entrypoint process
+          kill $ENTRYPOINT_PID 2>/dev/null || true
+          wait $ENTRYPOINT_PID 2>/dev/null || true
+          # Start nginx with our config
+          exec nginx -g "daemon off;"
         resources:
           requests:
             memory: "128Mi"
