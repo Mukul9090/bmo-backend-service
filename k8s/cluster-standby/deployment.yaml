@@ -7,7 +7,7 @@ metadata:
     app: backend-service
     cluster: standby
 spec:
-  replicas: 2
+  replicas: 2 # This is now the starting point; HPA will manage this
   selector:
     matchLabels:
       app: backend-service
@@ -27,11 +27,19 @@ spec:
           ports:
             - containerPort: 8080
               name: http
+          # Added Resources: Required for scaling to function
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
           env:
             - name: CLUSTER_ROLE
               valueFrom:
                 configMapKeyRef:
-                  name: backend-config
+                  name: backend-config-standby
                   key: CLUSTER_ROLE
           securityContext:
             allowPrivilegeEscalation: false
@@ -44,16 +52,29 @@ spec:
               port: 8080
             initialDelaySeconds: 5
             periodSeconds: 10
-            timeoutSeconds: 3
-            successThreshold: 1
-            failureThreshold: 3
           livenessProbe:
             httpGet:
               path: /healthz
               port: 8080
             initialDelaySeconds: 10
             periodSeconds: 30
-            timeoutSeconds: 3
-            successThreshold: 1
-            failureThreshold: 3
-
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: backend-hpa
+  namespace: default
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: backend-service
+  minReplicas: 2
+  maxReplicas: 5  # Allows scaling up to 5 pods if needed
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70 # Scales up if average CPU exceeds 70%

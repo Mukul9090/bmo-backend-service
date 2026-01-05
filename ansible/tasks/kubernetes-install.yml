@@ -1,0 +1,31 @@
+---
+# Kubernetes Installation Tasks
+- name: Install Kubernetes components
+  block:
+    - name: Add Kubernetes GPG key
+      apt_key:
+        url: https://pkgs.k8s.io/core:/stable:/v1.28/deb/Release.key
+        state: present
+    - name: Add Kubernetes repository
+      apt_repository:
+        repo: "deb [arch=amd64] https://pkgs.k8s.io/core:/stable:/v1.28/deb/ /"
+        state: present
+    - name: Install Kubernetes components
+      apt:
+        name:
+          - kubelet={{ k8s_version }}-1.1
+          - kubeadm={{ k8s_version }}-1.1
+          - kubectl={{ k8s_version }}-1.1
+        state: present
+        update_cache: yes
+    - name: Hold Kubernetes packages
+      dpkg_selections:
+        name: "{{ item }}"
+        selection: hold
+      loop: [kubelet, kubeadm, kubectl]
+    - name: Enable and start kubelet service
+      systemd:
+        name: kubelet
+        enabled: yes
+        state: started
+  when: ansible_os_family == "Debian"

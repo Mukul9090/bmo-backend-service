@@ -1,0 +1,93 @@
+---
+# Kubernetes Cluster Initialization Tasks
+- name: Initialize Kubernetes cluster
+  block:
+    - name: Create .kube directory and check cluster status
+      block:
+        - name: Create .kube directory
+          file:
+            path: "{{ item }}"
+            state: directory
+            mode: '0755'
+          loop:
+            - /root/.kube
+            - "{{ ansible_env.HOME }}/.kube"
+        - name: Check if cluster already initialized
+          stat:
+            path: /etc/kubernetes/admin.conf
+          register: kubeconfig_exists
+
+    - name: Initialize cluster
+      command: >
+        kubeadm init
+        --pod-network-cidr={{ pod_network_cidr }}
+        --service-cidr={{ service_cidr }}
+        --ignore-preflight-errors=Swap
+        --apiserver-advertise-address=0.0.0.0
+      when: not kubeconfig_exists.stat.exists
+      register: kubeadm_init
+      changed_when: kubeadm_init.rc == 0
+
+    - name: Configure kubeconfig for root
+      copy:
+        src: /etc/kubernetes/admin.conf
+        dest: /root/.kube/config
+        remote_src: yes
+        mode: '0644'
+        owner: root
+        group: root
+      when: kubeconfig_exists.stat.exists or (kubeadm_init.rc == 0)
+
+    - name: Configure kubeconfig for current user
+      copy:
+        src: /etc/kubernetes/admin.conf
+        dest: "{{ ansible_env.HOME }}/.kube/config"
+        remote_src: yes
+        mode: '0644'
+      when: kubeconfig_exists.stat.exists or (kubeadm_init.rc == 0)
+
+    - name: Install Calico CNI plugin
+      command: kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.26.1/manifests/calico.yaml
+      environment:
+        KUBECONFIG: /root/.kube/config
+      when: kubeconfig_exists.stat.exists or (kubeadm_init.rc == 0)
+      register: calico_install
+      until: calico_install.rc == 0
+      retries: 5
+      delay: 5
+
+    - name: Wait for cluster to be ready
+      command: kubectl get nodes
+      environment:
+        KUBECONFIG: /root/.kube/config
+      register: cluster_status
+      until: cluster_status.rc == 0
+      retries: 30
+      delay: 10
+      when: kubeconfig_exists.stat.exists or (kubeadm_init.rc == 0)
+
+    - name: Display cluster status
+      command: kubectl get nodes -o wide
+      environment:
+        KUBECONFIG: /root/.kube/config
+      register: cluster_info
+      changed_when: false
+      when: kubeconfig_exists.stat.exists or (kubeadm_init.rc == 0)
+
+    - name: Show cluster summary
+      debug:
+        msg:
+          - "✅ Kubernetes cluster setup completed successfully"
+          - "✅ Docker installed and running"
+          - "✅ Kubernetes components installed (kubelet, kubeadm, kubectl)"
+          - "✅ Cluster initialized and ready"
+          - "✅ kubeconfig configured at /root/.kube/config"
+          - "✅ Calico CNI plugin installed"
+          - "✅ Security hardening applied"
+          - ""
+          - "📋 Next steps:"
+          - "   - Verify cluster: kubectl get nodes"
+          - "   - Check system pods: kubectl get pods -n kube-system"
+          - "   - Cluster is ready for deployments"
+      when: cluster_info is defined and cluster_info.stdout_lines is defined
+  when: ansible_os_family == "Debian"

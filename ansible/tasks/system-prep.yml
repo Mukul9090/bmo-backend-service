@@ -1,0 +1,29 @@
+---
+# System Preparation Tasks
+- name: Install base packages and update system
+  apt:
+    name:
+      - apt-transport-https
+      - ca-certificates
+      - curl
+      - gnupg
+      - lsb-release
+      - python3-pip
+      - software-properties-common
+    state: present
+    update_cache: yes
+    upgrade: dist
+    autoremove: yes
+  when: ansible_os_family == "Debian"
+
+- name: Disable swap
+  block:
+    - name: Disable swap runtime
+      command: swapoff -a
+      changed_when: false
+    - name: Remove swap from /etc/fstab
+      replace:
+        path: /etc/fstab
+        regexp: '^([^#].*?\sswap\s+sw\s+)'
+        replace: '#\1'
+  when: ansible_os_family == "Debian"

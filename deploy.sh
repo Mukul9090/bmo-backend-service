@@ -1,0 +1,297 @@
+#!/bin/bash
+
+set -e  # Exit on error
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# Script directory
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+
+# Accept optional context parameters
+HOT_CONTEXT="${1:-}"
+STANDBY_CONTEXT="${2:-}"
+HAPROXY_CONTEXT="${3:-}"
+DOCKER_IMAGE="${4:-mukul1599/backend-service}"
+DOCKER_TAG="${5:-latest}"
+
+# If contexts provided, use them; otherwise use default kubectl context
+KUBECTL_CMD_HOT="kubectl"
+KUBECTL_CMD_STANDBY="kubectl"
+KUBECTL_CMD_HAPROXY="kubectl"
+
+if [ -n "$HOT_CONTEXT" ]; then
+    KUBECTL_CMD_HOT="kubectl --context=$HOT_CONTEXT"
+    echo -e "${BLUE}Using hot cluster context: $HOT_CONTEXT${NC}"
+fi
+
+if [ -n "$STANDBY_CONTEXT" ]; then
+    KUBECTL_CMD_STANDBY="kubectl --context=$STANDBY_CONTEXT"
+    echo -e "${BLUE}Using standby cluster context: $STANDBY_CONTEXT${NC}"
+fi
+
+if [ -n "$HAPROXY_CONTEXT" ]; then
+    KUBECTL_CMD_HAPROXY="kubectl --context=$HAPROXY_CONTEXT"
+    echo -e "${BLUE}Using HAProxy cluster context: $HAPROXY_CONTEXT${NC}"
+fi
+
+echo -e "${BLUE}🚀 Starting deployment...${NC}"
+echo -e "${BLUE}Docker Image: $DOCKER_IMAGE:$DOCKER_TAG${NC}"
+echo ""
+
+# Function to check if resource exists
+check_resource() {
+    local resource=$1
+    local namespace=$2
+    if kubectl get "$resource" -n "$namespace" &>/dev/null; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+# Function to wait for pods to be ready
+wait_for_pods() {
+    local namespace=$1
+    local selector=$2
+    local timeout=${3:-120}
+    
+    echo -e "${YELLOW}⏳ Waiting for pods with selector '$selector' in namespace '$namespace'...${NC}"
+    if kubectl wait --for=condition=ready --timeout=${timeout}s pod -l "$selector" -n "$namespace" 2>/dev/null; then
+        echo -e "${GREEN}✅ Pods are ready${NC}"
+        return 0
+    else
+        echo -e "${YELLOW}⚠️  Some pods may not be ready yet${NC}"
+        return 1
+    fi
+}
+
+# ============================================================================
+# Step 1: Deploy Monitoring Namespace
+# ============================================================================
+echo -e "${BLUE}📊 Step 1: Deploying monitoring namespace...${NC}"
+kubectl apply -f monitoring/namespace.yaml
+echo -e "${GREEN}✅ Monitoring namespace created${NC}"
+echo ""
+
+# ============================================================================
+# Step 2: Deploy Prometheus
+# ============================================================================
+echo -e "${BLUE}📊 Step 2: Deploying Prometheus...${NC}"
+kubectl apply -f monitoring/prometheus/serviceaccount.yaml
+kubectl apply -f monitoring/prometheus/configmap.yaml
+kubectl apply -f monitoring/prometheus/deployment.yaml
+kubectl apply -f monitoring/prometheus/service.yaml
+echo -e "${GREEN}✅ Prometheus deployed${NC}"
+echo ""
+
+# ============================================================================
+# Step 2.5: Deploy kube-state-metrics
+# ============================================================================
+echo -e "${BLUE}📊 Step 2.5: Deploying kube-state-metrics...${NC}"
+kubectl apply -f monitoring/kube-state-metrics/serviceaccount.yaml
+kubectl apply -f monitoring/kube-state-metrics/deployment.yaml
+kubectl apply -f monitoring/kube-state-metrics/service.yaml
+
+# Wait for kube-state-metrics to be ready
+wait_for_pods "monitoring" "app.kubernetes.io/name=kube-state-metrics" 120
+
+echo -e "${GREEN}✅ kube-state-metrics deployed and ready${NC}"
+echo ""
+
+# ============================================================================
+# Step 3: Deploy Grafana
+# ============================================================================
+echo -e "${BLUE}📊 Step 3: Deploying Grafana...${NC}"
+kubectl apply -f monitoring/grafana/configmap-datasources.yaml
+kubectl apply -f monitoring/grafana/deployment.yaml
+kubectl apply -f monitoring/grafana/service.yaml
+echo -e "${GREEN}✅ Grafana deployed${NC}"
+echo ""
+
+# ============================================================================
+# Step 4: Deploy Hot Cluster
+# ============================================================================
+echo -e "${BLUE}🔥 Step 4: Deploying Hot Cluster...${NC}"
+$KUBECTL_CMD_HOT apply -f k8s/cluster-hot/configmap.yaml
+sed "s|image: mukul1599/backend-service$|image: $DOCKER_IMAGE:$DOCKER_TAG|" k8s/cluster-hot/deployment.yaml | $KUBECTL_CMD_HOT apply -f -
+$KUBECTL_CMD_HOT apply -f k8s/cluster-hot/service.yaml
+$KUBECTL_CMD_HOT apply -f k8s/cluster-hot/network-policy.yaml
+echo -e "${GREEN}✅ Hot cluster deployed${NC}"
+echo ""
+
+# ============================================================================
+# Step 5: Deploy Standby Cluster
+# ============================================================================
+echo -e "${BLUE}❄️  Step 5: Deploying Standby Cluster...${NC}"
+$KUBECTL_CMD_STANDBY apply -f k8s/cluster-standby/configmap.yaml
+sed "s|image: mukul1599/backend-service$|image: $DOCKER_IMAGE:$DOCKER_TAG|" k8s/cluster-standby/deployment.yaml | $KUBECTL_CMD_STANDBY apply -f -
+$KUBECTL_CMD_STANDBY apply -f k8s/cluster-standby/service.yaml
+$KUBECTL_CMD_STANDBY apply -f k8s/cluster-standby/network-policy.yaml
+echo -e "${GREEN}✅ Standby cluster deployed${NC}"
+echo ""
+
+# ============================================================================
+# Step 6: Wait for services to get IPs
+# ============================================================================
+echo -e "${YELLOW}⏳ Waiting for services to be ready...${NC}"
+sleep 5
+
+# Wait for backend pods to be ready
+if [ -n "$HOT_CONTEXT" ]; then
+    $KUBECTL_CMD_HOT wait --for=condition=ready --timeout=120s pod -l app=backend-service-hot -n default 2>/dev/null || true
+else
+    wait_for_pods "default" "app=backend-service-hot" 120
+fi
+
+if [ -n "$STANDBY_CONTEXT" ]; then
+    $KUBECTL_CMD_STANDBY wait --for=condition=ready --timeout=120s pod -l "app=backend-service,cluster=standby" -n default 2>/dev/null || true
+else
+    wait_for_pods "default" "app=backend-service,cluster=standby" 120
+fi
+
+# ============================================================================
+# Step 7: Get Service IPs and Deploy HAProxy
+# ============================================================================
+echo -e "${BLUE}⚖️  Step 6: Deploying HAProxy...${NC}"
+
+# Get service ClusterIPs
+HOT_IP=$($KUBECTL_CMD_HOT get svc backend-service-hot -n default -o jsonpath='{.spec.clusterIP}' 2>/dev/null || echo "")
+STANDBY_IP=$($KUBECTL_CMD_STANDBY get svc backend-service -n default -o jsonpath='{.spec.clusterIP}' 2>/dev/null || echo "")
+
+if [ -z "$HOT_IP" ] || [ -z "$STANDBY_IP" ]; then
+    echo -e "${RED}❌ Error: Could not get service IPs${NC}"
+    echo "Hot IP: $HOT_IP"
+    echo "Standby IP: $STANDBY_IP"
+    exit 1
+fi
+
+echo -e "${GREEN}Hot cluster IP: ${HOT_IP}:80${NC}"
+echo -e "${GREEN}Standby cluster IP: ${STANDBY_IP}:80${NC}"
+
+# Update HAProxy config with actual IPs
+sed "s|<HOT_CLUSTER_EXTERNAL_IP>|${HOT_IP}:80|g" k8s/haproxy/configmap.yaml | \
+  sed "s|<STANDBY_CLUSTER_EXTERNAL_IP>|${STANDBY_IP}:80|g" | \
+  $KUBECTL_CMD_HAPROXY apply -f -
+
+$KUBECTL_CMD_HAPROXY apply -f k8s/haproxy/deployment.yaml
+$KUBECTL_CMD_HAPROXY apply -f k8s/haproxy/service.yaml
+$KUBECTL_CMD_HAPROXY apply -f k8s/haproxy/network-policy.yaml
+
+echo -e "${GREEN}✅ HAProxy deployed${NC}"
+echo ""
+
+# Wait for HAProxy to be ready
+if [ -n "$HAPROXY_CONTEXT" ]; then
+    $KUBECTL_CMD_HAPROXY wait --for=condition=ready --timeout=60s pod -l app=haproxy -n default 2>/dev/null || true
+else
+    wait_for_pods "default" "app=haproxy" 60
+fi
+
+# ============================================================================
+# Step 7.5: Verify Prometheus can query kube-state-metrics
+# ============================================================================
+echo -e "${BLUE}🔍 Step 7.5: Verifying Prometheus metrics...${NC}"
+echo -e "${YELLOW}⏳ Waiting for Prometheus to discover kube-state-metrics...${NC}"
+sleep 10
+
+# Wait for Prometheus to be ready
+wait_for_pods "monitoring" "app=prometheus" 60
+
+# Verify kube-state-metrics query works
+PROM_POD=$(kubectl get pod -n monitoring -l app=prometheus -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+if [ -n "$PROM_POD" ]; then
+    echo -e "${YELLOW}Testing Prometheus query for kube-state-metrics...${NC}"
+    QUERY_RESULT=$(kubectl exec -n monitoring "$PROM_POD" -- wget -qO- 'http://localhost:9090/api/v1/query?query=kube_pod_container_resource_requests{resource="cpu"}' 2>/dev/null | python3 -c "import sys, json; data=json.load(sys.stdin); print('success' if data.get('status')=='success' and len(data.get('data',{}).get('result',[])) > 0 else 'failed')" 2>/dev/null || echo "failed")
+    
+    if [ "$QUERY_RESULT" = "success" ]; then
+        echo -e "${GREEN}✅ Prometheus can query kube-state-metrics successfully${NC}"
+    else
+        echo -e "${YELLOW}⚠️  Prometheus query test inconclusive (may need more time to scrape)${NC}"
+    fi
+else
+    echo -e "${YELLOW}⚠️  Prometheus pod not found, skipping query verification${NC}"
+fi
+echo ""
+
+# ============================================================================
+# Step 8: Display Status
+# ============================================================================
+echo -e "${BLUE}📋 Deployment Status:${NC}"
+echo ""
+
+echo -e "${YELLOW}Backend Services:${NC}"
+$KUBECTL_CMD_HOT get pods -n default -l app=backend-service 2>/dev/null || echo "Hot cluster pods not found"
+$KUBECTL_CMD_STANDBY get pods -n default -l app=backend-service 2>/dev/null || echo "Standby cluster pods not found"
+echo ""
+
+echo -e "${YELLOW}HAProxy:${NC}"
+$KUBECTL_CMD_HAPROXY get pods -n default -l app=haproxy 2>/dev/null || echo "HAProxy pods not found"
+echo ""
+
+echo -e "${YELLOW}Monitoring:${NC}"
+kubectl get pods -n monitoring
+echo ""
+
+echo -e "${YELLOW}Services:${NC}"
+$KUBECTL_CMD_HOT get svc -n default | grep -E "backend-service|haproxy" || true
+$KUBECTL_CMD_STANDBY get svc -n default | grep -E "backend-service" || true
+$KUBECTL_CMD_HAPROXY get svc -n default | grep -E "haproxy" || true
+kubectl get svc -n monitoring
+echo ""
+
+# ============================================================================
+# Step 9: Port Forwarding Instructions
+# ============================================================================
+echo -e "${GREEN}✅ Deployment complete!${NC}"
+echo ""
+echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${BLUE}📡 Access Instructions:${NC}"
+echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo ""
+echo -e "${YELLOW}Option 1: Port Forwarding (Recommended)${NC}"
+echo "Run these commands in separate terminals:"
+echo ""
+echo -e "${GREEN}# Terminal 1: HAProxy (Load Balancer)${NC}"
+echo "  kubectl port-forward -n default svc/haproxy 9090:9090"
+echo "  → Access at: http://localhost:9090"
+echo ""
+echo -e "${GREEN}# Terminal 2: Grafana${NC}"
+echo "  kubectl port-forward -n monitoring svc/grafana 3000:3000"
+echo "  → Access at: http://localhost:3000"
+echo "  → Username: admin"
+echo "  → Password: admin"
+echo ""
+echo -e "${GREEN}# Terminal 3: Prometheus${NC}"
+echo "  kubectl port-forward -n monitoring svc/prometheus 9091:9090"
+echo "  → Access at: http://localhost:9091"
+echo "  → Test query: sum(kube_pod_container_resource_requests{resource=\"cpu\"}) by (pod, namespace)"
+echo ""
+echo -e "${YELLOW}Option 2: NodePort (if available)${NC}"
+echo "  HAProxy:    http://<node-ip>:30090"
+echo "  Grafana:    http://<node-ip>:30300"
+echo "  Prometheus: http://<node-ip>:30091"
+echo ""
+echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo ""
+
+# ============================================================================
+# Optional: Auto-start port forwarding (only in interactive mode)
+# ============================================================================
+if [ -t 0 ]; then
+    # Only prompt if running interactively (stdin is a terminal)
+    read -p "Do you want to start port forwarding for HAProxy now? (y/n) " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        echo -e "${GREEN}Starting port forward for HAProxy on port 9090...${NC}"
+        echo -e "${YELLOW}Press Ctrl+C to stop${NC}"
+        $KUBECTL_CMD_HAPROXY port-forward -n default svc/haproxy 9090:9090
+    fi
+else
+    echo -e "${BLUE}Running in non-interactive mode, skipping port-forward prompt${NC}"
+fi

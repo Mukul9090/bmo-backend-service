@@ -14,4 +14,8 @@ spec:
       port: 9090
       targetPort: 9090
       nodePort: 30090
+    - name: stats
+      port: 8404
+      targetPort: 8404
+      nodePort: 30404
 

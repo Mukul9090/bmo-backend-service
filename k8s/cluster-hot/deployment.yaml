@@ -27,11 +27,19 @@ spec:
           ports:
             - containerPort: 8080
               name: http
+          # RESOURCES: Necessary for the HPA to calculate usage
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
           env:
             - name: CLUSTER_ROLE
               valueFrom:
                 configMapKeyRef:
-                  name: backend-config
+                  name: backend-config-hot
                   key: CLUSTER_ROLE
           securityContext:
             allowPrivilegeEscalation: false
@@ -56,4 +64,23 @@ spec:
             timeoutSeconds: 3
             successThreshold: 1
             failureThreshold: 3
-
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: backend-hot-hpa
+  namespace: default
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: backend-service-hot # Must match the deployment name above
+  minReplicas: 2
+  maxReplicas: 5
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
