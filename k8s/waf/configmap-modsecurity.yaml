@@ -12,6 +12,7 @@ data:
     SecResponseBodyMimeType text/plain text/html text/xml application/json
     
     # OWASP CRS Rules
+    # Note: These paths should exist in the owasp/modsecurity-crs:nginx-alpine image
     Include /etc/nginx/modsec/crs/crs-setup.conf
     Include /etc/nginx/modsec/crs/rules/*.conf
     

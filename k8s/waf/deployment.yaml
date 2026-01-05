@@ -46,6 +46,10 @@ spec:
         volumeMounts:
         - name: modsec-logs
           mountPath: /var/log
+        - name: nginx-config
+          mountPath: /etc/nginx/conf.d
+        - name: modsecurity-config
+          mountPath: /etc/nginx/modsec
         resources:
           requests:
             memory: "128Mi"
@@ -61,3 +65,9 @@ spec:
       volumes:
       - name: modsec-logs
         emptyDir: {}
+      - name: nginx-config
+        configMap:
+          name: modsecurity-nginx-config
+      - name: modsecurity-config
+        configMap:
+          name: modsecurity-config
