@@ -270,76 +270,26 @@ jobs:
           
           echo "✅ WAF service and pods are ready"
           
-          # Cleanup function
-          cleanup() {
-              if [ -n "$PF_PID" ]; then
-                  kill $PF_PID 2>/dev/null || true
-                  wait $PF_PID 2>/dev/null || true
-              fi
-          }
-          trap cleanup EXIT
+          # Make script executable
+          chmod +x run_waf_test.sh
           
-          echo "🔧 Setting up port-forward for WAF service..."
-          
-          # Kill any existing port-forwards on port 8080
-          lsof -ti:8080 | xargs kill -9 2>/dev/null || true
-          sleep 1
-          
-          # Start port-forward with context (if provided)
+          # Run the WAF test script with context (it handles port-forward and test execution)
+          echo "🚀 Running WAF security tests using run_waf_test.sh..."
           if [ -n "$HAPROXY_CTX" ]; then
-            kubectl port-forward --context="$HAPROXY_CTX" -n default svc/modsecurity-waf 8080:80 > /tmp/waf-portforward.log 2>&1 &
-          else
-            kubectl port-forward -n default svc/modsecurity-waf 8080:80 > /tmp/waf-portforward.log 2>&1 &
-          fi
-          PF_PID=$!
-          
-          # Wait for port-forward to be ready
-          sleep 2
-          
-          # Check if port-forward process is running
-          if ! kill -0 $PF_PID 2>/dev/null; then
-              echo "❌ Port-forward process failed to start"
-              cat /tmp/waf-portforward.log 2>/dev/null || true
-              exit 1
-          fi
-          
-          # Try to connect with retries
-          echo "⏳ Waiting for port-forward to be ready..."
-          MAX_RETRIES=10
-          RETRY_COUNT=0
-          PORT_READY=false
-          
-          while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-              if curl -s -f http://localhost:8080/ > /dev/null 2>&1 || \
-                 curl -s -f http://localhost:8080/waf-health > /dev/null 2>&1 || \
-                 curl -s -f http://localhost:8080/healthz > /dev/null 2>&1; then
-                  PORT_READY=true
-                  break
-              fi
-              RETRY_COUNT=$((RETRY_COUNT + 1))
-              sleep 1
-          done
-          
-          if [ "$PORT_READY" = false ]; then
-              echo "❌ Port-forward failed to connect after $MAX_RETRIES attempts"
-              cat /tmp/waf-portforward.log 2>/dev/null || true
-              kubectl_cmd "$HAPROXY_CTX" get svc modsecurity-waf -n default || true
-              kubectl_cmd "$HAPROXY_CTX" get pods -l app=modsecurity-waf -n default || true
-              exit 1
-          fi
-          
-          echo "✅ Port-forward active on localhost:8080"
-          echo ""
-          echo "🚀 Running WAF security tests..."
-          echo ""
-          
-          # Run the test
-          WAF_URL="http://localhost:8080" python3 test_waf.py || {
+            ./run_waf_test.sh "$HAPROXY_CTX" || {
               echo "❌ WAF tests failed"
               echo "Checking WAF pod status:"
               kubectl_cmd "$HAPROXY_CTX" get pods -l app=modsecurity-waf -n default || true
               exit 1
-          }
+            }
+          else
+            ./run_waf_test.sh || {
+              echo "❌ WAF tests failed"
+              echo "Checking WAF pod status:"
+              kubectl_cmd "$HAPROXY_CTX" get pods -l app=modsecurity-waf -n default || true
+              exit 1
+            }
+          fi
           
           echo ""
           echo "✅ WAF security tests passed" >> $GITHUB_STEP_SUMMARY

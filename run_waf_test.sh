@@ -2,8 +2,22 @@
 
 # WAF Test Runner Script
 # Automatically sets up port-forward and runs WAF security tests
+# Usage: ./run_waf_test.sh [context]
+#   context: Optional kubectl context name (defaults to current context)
 
 set -e
+
+# Accept optional context parameter
+KUBECTL_CONTEXT="${1:-}"
+
+# Set up kubectl command with optional context
+if [ -n "$KUBECTL_CONTEXT" ]; then
+    KUBECTL_CMD="kubectl --context=$KUBECTL_CONTEXT"
+    echo "Using kubectl context: $KUBECTL_CONTEXT"
+else
+    KUBECTL_CMD="kubectl"
+    echo "Using default kubectl context"
+fi
 
 # Debug logging function
 log_debug() {
@@ -28,8 +42,8 @@ trap cleanup EXIT
 echo "🔧 Setting up port-forward for WAF service..."
 
 # #region agent log
-CURRENT_CTX=$(kubectl config current-context 2>/dev/null || echo "none")
-log_debug "H3" "run_waf_test.sh:18" "Current kubectl context" "{\"context\":\"$CURRENT_CTX\"}"
+CURRENT_CTX=$($KUBECTL_CMD config current-context 2>/dev/null || echo "none")
+log_debug "H3" "run_waf_test.sh:28" "Current kubectl context" "{\"context\":\"$CURRENT_CTX\"}"
 # #endregion
 
 # Initialize variables
@@ -37,11 +51,11 @@ SERVICE_EXISTS=false
 SERVICE_NAMESPACE="default"
 
 # #region agent log
-log_debug "H1,H4" "run_waf_test.sh:24" "Checking if WAF service exists before port-forward" "{\"namespace\":\"default\",\"service\":\"modsecurity-waf\"}"
+log_debug "H1,H4" "run_waf_test.sh:34" "Checking if WAF service exists before port-forward" "{\"namespace\":\"default\",\"service\":\"modsecurity-waf\"}"
 # #endregion
 
 # Check if service exists in default namespace (H1, H4)
-if kubectl get svc modsecurity-waf -n default &>/dev/null; then
+if $KUBECTL_CMD get svc modsecurity-waf -n default &>/dev/null; then
     # #region agent log
     log_debug "H1,H4" "run_waf_test.sh:28" "WAF service exists in default namespace" "{\"service\":\"modsecurity-waf\",\"namespace\":\"default\"}"
     # #endregion
@@ -53,18 +67,18 @@ else
     # #endregion
     
     # #region agent log
-    ALL_SERVICES=$(kubectl get svc -n default -o json 2>/dev/null | jq -r '.items[].metadata.name' 2>/dev/null | tr '\n' ',' || echo "error")
-    log_debug "H2" "run_waf_test.sh:38" "All services in default namespace" "{\"services\":\"$ALL_SERVICES\"}"
+    ALL_SERVICES=$($KUBECTL_CMD get svc -n default -o json 2>/dev/null | jq -r '.items[].metadata.name' 2>/dev/null | tr '\n' ',' || echo "error")
+    log_debug "H2" "run_waf_test.sh:48" "All services in default namespace" "{\"services\":\"$ALL_SERVICES\"}"
     # #endregion
     
     # #region agent log
-    ALL_NAMESPACES=$(kubectl get namespaces -o json 2>/dev/null | jq -r '.items[].metadata.name' 2>/dev/null | tr '\n' ',' || echo "error")
-    log_debug "H2" "run_waf_test.sh:42" "All namespaces" "{\"namespaces\":\"$ALL_NAMESPACES\"}"
+    ALL_NAMESPACES=$($KUBECTL_CMD get namespaces -o json 2>/dev/null | jq -r '.items[].metadata.name' 2>/dev/null | tr '\n' ',' || echo "error")
+    log_debug "H2" "run_waf_test.sh:52" "All namespaces" "{\"namespaces\":\"$ALL_NAMESPACES\"}"
     # #endregion
     
     # Check other namespaces (H2)
-    for ns in $(kubectl get namespaces -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
-        if kubectl get svc modsecurity-waf -n "$ns" &>/dev/null; then
+    for ns in $($KUBECTL_CMD get namespaces -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
+        if $KUBECTL_CMD get svc modsecurity-waf -n "$ns" &>/dev/null; then
             # #region agent log
             log_debug "H2" "run_waf_test.sh:48" "WAF service found in different namespace" "{\"service\":\"modsecurity-waf\",\"namespace\":\"$ns\"}"
             # #endregion
@@ -75,13 +89,13 @@ else
     done
     
     # #region agent log
-    WAF_DEPLOYMENT=$(kubectl get deployment modsecurity-waf -n default -o json 2>/dev/null | jq -r '.metadata.name // "not_found"' || echo "error")
-    log_debug "H1" "run_waf_test.sh:57" "WAF deployment status" "{\"deployment\":\"$WAF_DEPLOYMENT\",\"namespace\":\"default\"}"
+    WAF_DEPLOYMENT=$($KUBECTL_CMD get deployment modsecurity-waf -n default -o json 2>/dev/null | jq -r '.metadata.name // "not_found"' || echo "error")
+    log_debug "H1" "run_waf_test.sh:67" "WAF deployment status" "{\"deployment\":\"$WAF_DEPLOYMENT\",\"namespace\":\"default\"}"
     # #endregion
     
     # #region agent log
-    WAF_PODS=$(kubectl get pods -l app=modsecurity-waf -n default -o json 2>/dev/null | jq -r '.items | length' || echo "error")
-    log_debug "H1" "run_waf_test.sh:61" "WAF pods count" "{\"pod_count\":\"$WAF_PODS\",\"namespace\":\"default\"}"
+    WAF_PODS=$($KUBECTL_CMD get pods -l app=modsecurity-waf -n default -o json 2>/dev/null | jq -r '.items | length' || echo "error")
+    log_debug "H1" "run_waf_test.sh:71" "WAF pods count" "{\"pod_count\":\"$WAF_PODS\",\"namespace\":\"default\"}"
     # #endregion
 fi
 
@@ -94,7 +108,7 @@ log_debug "H3" "run_waf_test.sh:68" "Attempting port-forward" "{\"namespace\":\"
 # #endregion
 
 # Start port-forward
-kubectl port-forward -n "$SERVICE_NAMESPACE" svc/modsecurity-waf 8080:80 > /tmp/waf-portforward.log 2>&1 &
+$KUBECTL_CMD port-forward -n "$SERVICE_NAMESPACE" svc/modsecurity-waf 8080:80 > /tmp/waf-portforward.log 2>&1 &
 PF_PID=$!
 
 # #region agent log
@@ -148,10 +162,10 @@ if [ "$PORT_READY" = false ]; then
     cat /tmp/waf-portforward.log 2>/dev/null || true
     echo ""
     echo "Check if WAF service is running:"
-    kubectl get svc modsecurity-waf -n default
+    $KUBECTL_CMD get svc modsecurity-waf -n default
     echo ""
     echo "Check if WAF pods are running:"
-    kubectl get pods -l app=modsecurity-waf -n default
+    $KUBECTL_CMD get pods -l app=modsecurity-waf -n default
     exit 1
 fi
 
@@ -166,4 +180,4 @@ WAF_URL="http://localhost:8080" python3 test_waf.py
 # Cleanup is handled by trap
 echo ""
 echo "✅ Test complete! Check ModSecurity logs with:"
-echo "   kubectl exec -n default deployment/modsecurity-waf -- tail -100 /var/log/modsec_audit.log"
+echo "   $KUBECTL_CMD exec -n default deployment/modsecurity-waf -- tail -100 /var/log/modsec_audit.log"
