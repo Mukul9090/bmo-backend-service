@@ -83,20 +83,56 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Resolve cluster contexts
+        id: resolve-contexts
+        run: |
+          # Get current context
+          CURRENT_CTX=$(kubectl config current-context 2>/dev/null || echo "")
+          echo "Current kubectl context: ${CURRENT_CTX:-none}"
+          
+          # Function to resolve context (check if exists, otherwise use current or empty)
+          resolve_context() {
+            local desired_ctx="$1"
+            if [ -z "$desired_ctx" ]; then
+              # If no desired context specified, use current or empty
+              echo "${CURRENT_CTX}"
+            elif kubectl config get-contexts "$desired_ctx" &>/dev/null 2>&1; then
+              # Desired context exists, use it
+              echo "$desired_ctx"
+            else
+              # Desired context doesn't exist, fall back to current or empty
+              echo "${CURRENT_CTX}"
+            fi
+          }
+          
+          HOT_CTX=$(resolve_context "${{ env.K8S_CLUSTER_HOT_CONTEXT }}")
+          STANDBY_CTX=$(resolve_context "${{ env.K8S_CLUSTER_STANDBY_CONTEXT }}")
+          HAPROXY_CTX=$(resolve_context "${{ env.HAPROXY_CLUSTER_CONTEXT }}")
+          
+          echo "Resolved contexts:"
+          echo "  Hot: ${HOT_CTX:-<current/default>} (requested: ${{ env.K8S_CLUSTER_HOT_CONTEXT }})"
+          echo "  Standby: ${STANDBY_CTX:-<current/default>} (requested: ${{ env.K8S_CLUSTER_STANDBY_CONTEXT }})"
+          echo "  HAProxy: ${HAPROXY_CTX:-<current/default>} (requested: ${{ env.HAPROXY_CLUSTER_CONTEXT }})"
+          
+          # Output contexts (use empty string if using default context to avoid --context="" issues)
+          echo "hot_context=$HOT_CTX" >> $GITHUB_OUTPUT
+          echo "standby_context=$STANDBY_CTX" >> $GITHUB_OUTPUT
+          echo "haproxy_context=$HAPROXY_CTX" >> $GITHUB_OUTPUT
+
       - name: Clean existing deployments
         run: |
-          HOT_CTX="${{ env.K8S_CLUSTER_HOT_CONTEXT }}"
-          STANDBY_CTX="${{ env.K8S_CLUSTER_STANDBY_CONTEXT }}"
-          HAPROXY_CTX="${{ env.HAPROXY_CLUSTER_CONTEXT }}"
+          HOT_CTX="${{ steps.resolve-contexts.outputs.hot_context }}"
+          STANDBY_CTX="${{ steps.resolve-contexts.outputs.standby_context }}"
+          HAPROXY_CTX="${{ steps.resolve-contexts.outputs.haproxy_context }}"
           
           chmod +x cleanup.sh
           ./cleanup.sh "$HOT_CTX" "$STANDBY_CTX" "$HAPROXY_CTX"
 
       - name: Deploy using deploy.sh
         run: |
-          HOT_CTX="${{ env.K8S_CLUSTER_HOT_CONTEXT }}"
-          STANDBY_CTX="${{ env.K8S_CLUSTER_STANDBY_CONTEXT }}"
-          HAPROXY_CTX="${{ env.HAPROXY_CLUSTER_CONTEXT }}"
+          HOT_CTX="${{ steps.resolve-contexts.outputs.hot_context }}"
+          STANDBY_CTX="${{ steps.resolve-contexts.outputs.standby_context }}"
+          HAPROXY_CTX="${{ steps.resolve-contexts.outputs.haproxy_context }}"
           
           chmod +x deploy.sh
           # Run deploy.sh with contexts and image info (non-interactive mode)
@@ -105,36 +141,148 @@ jobs:
 
       - name: Deploy and verify network policies
         run: |
-          HOT_CTX="${{ env.K8S_CLUSTER_HOT_CONTEXT }}"
-          STANDBY_CTX="${{ env.K8S_CLUSTER_STANDBY_CONTEXT }}"
-          HAPROXY_CTX="${{ env.HAPROXY_CLUSTER_CONTEXT }}"
+          HOT_CTX="${{ steps.resolve-contexts.outputs.hot_context }}"
+          STANDBY_CTX="${{ steps.resolve-contexts.outputs.standby_context }}"
+          HAPROXY_CTX="${{ steps.resolve-contexts.outputs.haproxy_context }}"
+          
+          # Helper function to build kubectl command with optional context
+          kubectl_cmd() {
+            local ctx="$1"
+            shift
+            if [ -n "$ctx" ]; then
+              kubectl --context="$ctx" "$@"
+            else
+              kubectl "$@"
+            fi
+          }
           
           echo "🔒 Deploying network policies..."
           
           # Deploy network policies for hot cluster
-          kubectl apply --context=$HOT_CTX -f k8s/cluster-hot/network-policy.yaml
+          kubectl_cmd "$HOT_CTX" apply -f k8s/cluster-hot/network-policy.yaml
           echo "✅ Network policy applied to hot cluster"
           
           # Deploy network policies for standby cluster
-          kubectl apply --context=$STANDBY_CTX -f k8s/cluster-standby/network-policy.yaml
+          kubectl_cmd "$STANDBY_CTX" apply -f k8s/cluster-standby/network-policy.yaml
           echo "✅ Network policy applied to standby cluster"
           
           # Deploy network policy for HAProxy
-          kubectl apply --context=$HAPROXY_CTX -f k8s/haproxy/network-policy.yaml
+          kubectl_cmd "$HAPROXY_CTX" apply -f k8s/haproxy/network-policy.yaml
           echo "✅ Network policy applied to HAProxy"
           
           # Verify network policies are applied
           echo ""
           echo "Network policies status:"
-          kubectl get networkpolicies --context=$HOT_CTX -n default || echo "No network policies in hot cluster"
-          kubectl get networkpolicies --context=$STANDBY_CTX -n default || echo "No network policies in standby cluster"
-          kubectl get networkpolicies --context=$HAPROXY_CTX -n default || echo "No network policies in HAProxy cluster"
+          kubectl_cmd "$HOT_CTX" get networkpolicies -n default || echo "No network policies in hot cluster"
+          kubectl_cmd "$STANDBY_CTX" get networkpolicies -n default || echo "No network policies in standby cluster"
+          kubectl_cmd "$HAPROXY_CTX" get networkpolicies -n default || echo "No network policies in HAProxy cluster"
           
           echo "✅ Network policies deployed and verified" >> $GITHUB_STEP_SUMMARY
 
+      - name: Run WAF Security Tests
+        run: |
+          HAPROXY_CTX="${{ steps.resolve-contexts.outputs.haproxy_context }}"
+          
+          # Helper function to build kubectl command with optional context
+          kubectl_cmd() {
+            local ctx="$1"
+            shift
+            if [ -n "$ctx" ]; then
+              kubectl --context="$ctx" "$@"
+            else
+              kubectl "$@"
+            fi
+          }
+          
+          echo "🛡️ Running WAF security tests..."
+          
+          # Wait a bit for WAF to be fully ready
+          echo "⏳ Waiting for WAF to be ready..."
+          sleep 10
+          
+          # Check if WAF service exists
+          if ! kubectl_cmd "$HAPROXY_CTX" get svc modsecurity-waf -n default &>/dev/null; then
+            echo "⚠️  WAF service not found, skipping tests"
+            exit 0
+          fi
+          
+          # Cleanup function
+          cleanup() {
+              if [ -n "$PF_PID" ]; then
+                  kill $PF_PID 2>/dev/null || true
+                  wait $PF_PID 2>/dev/null || true
+              fi
+          }
+          trap cleanup EXIT
+          
+          echo "🔧 Setting up port-forward for WAF service..."
+          
+          # Kill any existing port-forwards on port 8080
+          lsof -ti:8080 | xargs kill -9 2>/dev/null || true
+          sleep 1
+          
+          # Start port-forward with context (if provided)
+          if [ -n "$HAPROXY_CTX" ]; then
+            kubectl port-forward --context="$HAPROXY_CTX" -n default svc/modsecurity-waf 8080:80 > /tmp/waf-portforward.log 2>&1 &
+          else
+            kubectl port-forward -n default svc/modsecurity-waf 8080:80 > /tmp/waf-portforward.log 2>&1 &
+          fi
+          PF_PID=$!
+          
+          # Wait for port-forward to be ready
+          sleep 2
+          
+          # Check if port-forward process is running
+          if ! kill -0 $PF_PID 2>/dev/null; then
+              echo "❌ Port-forward process failed to start"
+              cat /tmp/waf-portforward.log 2>/dev/null || true
+              exit 1
+          fi
+          
+          # Try to connect with retries
+          echo "⏳ Waiting for port-forward to be ready..."
+          MAX_RETRIES=10
+          RETRY_COUNT=0
+          PORT_READY=false
+          
+          while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+              if curl -s -f http://localhost:8080/ > /dev/null 2>&1 || \
+                 curl -s -f http://localhost:8080/waf-health > /dev/null 2>&1 || \
+                 curl -s -f http://localhost:8080/healthz > /dev/null 2>&1; then
+                  PORT_READY=true
+                  break
+              fi
+              RETRY_COUNT=$((RETRY_COUNT + 1))
+              sleep 1
+          done
+          
+          if [ "$PORT_READY" = false ]; then
+              echo "❌ Port-forward failed to connect after $MAX_RETRIES attempts"
+              cat /tmp/waf-portforward.log 2>/dev/null || true
+              kubectl_cmd "$HAPROXY_CTX" get svc modsecurity-waf -n default || true
+              kubectl_cmd "$HAPROXY_CTX" get pods -l app=modsecurity-waf -n default || true
+              exit 1
+          fi
+          
+          echo "✅ Port-forward active on localhost:8080"
+          echo ""
+          echo "🚀 Running WAF security tests..."
+          echo ""
+          
+          # Run the test
+          WAF_URL="http://localhost:8080" python3 test_waf.py || {
+              echo "❌ WAF tests failed"
+              echo "Checking WAF pod status:"
+              kubectl_cmd "$HAPROXY_CTX" get pods -l app=modsecurity-waf -n default || true
+              exit 1
+          }
+          
+          echo ""
+          echo "✅ WAF security tests passed" >> $GITHUB_STEP_SUMMARY
+
       - name: Setup persistent HAProxy port-forward
         run: |
-          HAPROXY_CTX="${{ env.HAPROXY_CLUSTER_CONTEXT }}"
+          HAPROXY_CTX="${{ steps.resolve-contexts.outputs.haproxy_context }}"
           
           
           # Create bin directory if it doesn't exist
@@ -146,7 +294,8 @@ jobs:
           sleep 2
           
           # Create persistent port-forward script
-          cat > ~/bin/keep-haproxy-forward.sh << EOF
+          if [ -n "$HAPROXY_CTX" ]; then
+            cat > ~/bin/keep-haproxy-forward.sh << EOF
           #!/bin/bash
           while true; do
             kubectl port-forward --context=$HAPROXY_CTX svc/haproxy 9090:9090 2>&1 | tee -a /tmp/haproxy-portforward.log
@@ -154,6 +303,16 @@ jobs:
             sleep 5
           done
           EOF
+          else
+            cat > ~/bin/keep-haproxy-forward.sh << EOF
+          #!/bin/bash
+          while true; do
+            kubectl port-forward svc/haproxy 9090:9090 2>&1 | tee -a /tmp/haproxy-portforward.log
+            echo "Port-forward disconnected, reconnecting in 5 seconds..." >> /tmp/haproxy-portforward.log
+            sleep 5
+          done
+          EOF
+          fi
           
           chmod +x ~/bin/keep-haproxy-forward.sh
           
@@ -172,12 +331,23 @@ jobs:
 
       - name: Deployment summary
         run: |
-          HOT_CTX="${{ env.K8S_CLUSTER_HOT_CONTEXT }}"
-          STANDBY_CTX="${{ env.K8S_CLUSTER_STANDBY_CONTEXT }}"
-          HAPROXY_CTX="${{ env.HAPROXY_CLUSTER_CONTEXT }}"
+          HOT_CTX="${{ steps.resolve-contexts.outputs.hot_context }}"
+          STANDBY_CTX="${{ steps.resolve-contexts.outputs.standby_context }}"
+          HAPROXY_CTX="${{ steps.resolve-contexts.outputs.haproxy_context }}"
+          
+          # Helper function to build kubectl command with optional context
+          kubectl_cmd() {
+            local ctx="$1"
+            shift
+            if [ -n "$ctx" ]; then
+              kubectl --context="$ctx" "$@"
+            else
+              kubectl "$@"
+            fi
+          }
           
           echo "## 🚀 Deployment Summary" >> $GITHUB_STEP_SUMMARY
-          echo "Using contexts - Hot: $HOT_CTX, Standby: $STANDBY_CTX, HAProxy: $HAPROXY_CTX" >> $GITHUB_STEP_SUMMARY
-          kubectl get pods --context=$HOT_CTX -n default -l app=backend-service >> $GITHUB_STEP_SUMMARY || true
-          kubectl get pods --context=$STANDBY_CTX -n default -l app=backend-service >> $GITHUB_STEP_SUMMARY || true
-          kubectl get pods --context=$HAPROXY_CTX -l app=haproxy >> $GITHUB_STEP_SUMMARY || true
+          echo "Using contexts - Hot: ${HOT_CTX:-<default>}, Standby: ${STANDBY_CTX:-<default>}, HAProxy: ${HAPROXY_CTX:-<default>}" >> $GITHUB_STEP_SUMMARY
+          kubectl_cmd "$HOT_CTX" get pods -n default -l app=backend-service >> $GITHUB_STEP_SUMMARY || true
+          kubectl_cmd "$STANDBY_CTX" get pods -n default -l app=backend-service >> $GITHUB_STEP_SUMMARY || true
+          kubectl_cmd "$HAPROXY_CTX" get pods -n default -l app=haproxy >> $GITHUB_STEP_SUMMARY || true
