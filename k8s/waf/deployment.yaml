@@ -1,0 +1,61 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: modsecurity-waf
+  namespace: default
+  labels:
+    app: modsecurity-waf
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: modsecurity-waf
+  template:
+    metadata:
+      labels:
+        app: modsecurity-waf
+    spec:
+      initContainers:
+      - name: create-log-dirs
+        image: busybox:latest
+        command: ['sh', '-c', 'mkdir -p /var/log/nginx /var/log/modsecurity/audit && chmod -R 777 /var/log']
+        volumeMounts:
+        - name: modsec-logs
+          mountPath: /var/log
+      containers:
+      - name: nginx-waf
+        image: owasp/modsecurity-crs:nginx-alpine
+        ports:
+        - containerPort: 80
+          name: http
+        env:
+        - name: BACKEND_HOST
+          value: "haproxy.default.svc.cluster.local"
+        - name: BACKEND_PORT
+          value: "9090"
+        - name: PROXY_PASS_URL
+          value: "http://haproxy.default.svc.cluster.local:9090"
+        - name: MODSEC_RULE_ENGINE
+          value: "On"
+        - name: MODSEC_AUDIT_ENGINE
+          value: "RelevantOnly"
+        - name: MODSEC_AUDIT_LOG
+          value: "/var/log/modsec_audit.log"
+        volumeMounts:
+        - name: modsec-logs
+          mountPath: /var/log
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+              - ALL
+      volumes:
+      - name: modsec-logs
+        emptyDir: {}

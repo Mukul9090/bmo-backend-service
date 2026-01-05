@@ -1,0 +1,38 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: modsecurity-waf-network-policy
+  namespace: default
+spec:
+  podSelector:
+    matchLabels:
+      app: modsecurity-waf
+  policyTypes:
+  - Ingress
+  - Egress
+  
+  ingress:
+  # Allow traffic from anywhere (WAF is the public entry point)
+  - {}
+  
+  egress:
+  # Allow traffic to HAProxy
+  - to:
+    - podSelector:
+        matchLabels:
+          app: haproxy
+    ports:
+    - protocol: TCP
+      port: 9090
+  
+  # Allow DNS queries
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: kube-system
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+    ports:
+    - protocol: UDP
+      port: 53

@@ -1,0 +1,43 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: modsecurity-config
+  namespace: default
+data:
+  modsecurity.conf: |
+    # ModSecurity Configuration
+    SecRuleEngine On
+    SecRequestBodyAccess On
+    SecResponseBodyAccess On
+    SecResponseBodyMimeType text/plain text/html text/xml application/json
+    
+    # OWASP CRS Rules
+    Include /etc/nginx/modsec/crs/crs-setup.conf
+    Include /etc/nginx/modsec/crs/rules/*.conf
+    
+    # Custom Security Rules
+    # Block common bot user agents
+    SecRule REQUEST_HEADERS:User-Agent "@contains bot" \
+        "id:1000,phase:1,deny,status:403,msg:'Bot detected',logdata:'%{MATCHED_VAR}'"
+    
+    # Allow only GET, POST, HEAD, OPTIONS methods
+    SecRule REQUEST_METHOD "!@rx ^(GET|POST|HEAD|OPTIONS)$" \
+        "id:1001,phase:1,deny,status:405,msg:'Method not allowed',logdata:'%{REQUEST_METHOD}'"
+    
+    # Rate limiting (basic)
+    SecAction \
+        "id:1002,phase:1,nolog,pass,initcol:ip=%{REMOTE_ADDR},initcol:user=%{REMOTE_ADDR},setvar:ip.requests=+1"
+    
+    SecRule IP:REQUESTS "@gt 100" \
+        "id:1003,phase:1,deny,status:429,msg:'Rate limit exceeded',logdata:'%{IP.requests}'"
+    
+    # Logging
+    SecAuditEngine RelevantOnly
+    SecAuditLogParts ABIJDEFHZ
+    SecAuditLogType Serial
+    SecAuditLog /var/log/modsec_audit.log
+    
+    # Response body limit
+    SecRequestBodyLimit 13107200
+    SecRequestBodyNoFilesLimit 131072
+    SecRequestBodyLimitAction Reject

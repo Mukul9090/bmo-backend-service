@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: modsecurity-waf
+  namespace: default
+  labels:
+    app: modsecurity-waf
+spec:
+  type: LoadBalancer
+  # Alternative: Use NodePort for local testing
+  # type: NodePort
+  selector:
+    app: modsecurity-waf
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8080
+    protocol: TCP
+    # nodePort: 30080  # Uncomment if using NodePort type
