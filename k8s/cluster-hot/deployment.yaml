@@ -7,7 +7,7 @@ metadata:
     app: backend-service
     cluster: hot
 spec:
-  replicas: 2
+  replicas: 3
   selector:
     matchLabels:
       app: backend-service-hot
@@ -75,7 +75,7 @@ spec:
     apiVersion: apps/v1
     kind: Deployment
     name: backend-service-hot # Must match the deployment name above
-  minReplicas: 2
+  minReplicas: 3
   maxReplicas: 5
   metrics:
   - type: Resource
