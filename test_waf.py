@@ -4,7 +4,7 @@ WAF Security Test Script
 Sends various attack patterns to test ModSecurity WAF rules
 """
 
-import requests
+import requests 
 import time
 import sys
 import os
