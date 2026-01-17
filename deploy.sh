@@ -91,17 +91,19 @@ echo -e "${GREEN}SUCCESS: Prometheus deployed${NC}"
 echo ""
 
 # ============================================================================
-# Step 2.5: Deploy kube-state-metrics
+# Step 2.5: Deploy kube-state-metrics (SKIPPED - Minikube networking issues)
 # ============================================================================
-echo -e "${BLUE}Step 2.5: Deploying kube-state-metrics...${NC}"
-kubectl apply -f monitoring/kube-state-metrics/serviceaccount.yaml
-kubectl apply -f monitoring/kube-state-metrics/deployment.yaml
-kubectl apply -f monitoring/kube-state-metrics/service.yaml
-
-# Wait for kube-state-metrics to be ready
-wait_for_pods "monitoring" "app.kubernetes.io/name=kube-state-metrics" 120
-
-echo -e "${GREEN}SUCCESS: kube-state-metrics deployed and ready${NC}"
+# echo -e "${BLUE}Step 2.5: Deploying kube-state-metrics...${NC}"
+# kubectl apply -f monitoring/kube-state-metrics/serviceaccount.yaml
+# kubectl apply -f monitoring/kube-state-metrics/deployment.yaml
+# kubectl apply -f monitoring/kube-state-metrics/service.yaml
+# 
+# # Wait for kube-state-metrics to be ready
+# wait_for_pods "monitoring" "app.kubernetes.io/name=kube-state-metrics" 120
+# 
+# echo -e "${GREEN}SUCCESS: kube-state-metrics deployed and ready${NC}"
+# echo ""
+echo -e "${YELLOW}Skipping kube-state-metrics deployment${NC}"
 echo ""
 
 # ============================================================================
@@ -407,5 +409,56 @@ if kill -0 $PF_PID 2>/dev/null; then
 else
     echo -e "${RED}ERROR: Port-forward failed to start${NC}"
     echo -e "${YELLOW}Check logs: cat /tmp/waf-portforward.log${NC}"
+fi
+echo ""
+
+# ============================================================================
+# Deploy kube-state-metrics for cluster monitoring
+# ============================================================================
+echo -e "${BLUE}Deploying kube-state-metrics...${NC}"
+kubectl apply -f monitoring/kube-state-metrics/serviceaccount.yaml
+kubectl apply -f monitoring/kube-state-metrics/deployment.yaml
+kubectl apply -f monitoring/kube-state-metrics/service.yaml
+
+# Wait for kube-state-metrics to be ready
+echo -e "${YELLOW}Waiting for kube-state-metrics to be ready...${NC}"
+kubectl wait --for=condition=ready --timeout=120s pod -l app.kubernetes.io/name=kube-state-metrics -n monitoring 2>/dev/null || true
+
+# Check status
+if kubectl get pods -n monitoring -l app.kubernetes.io/name=kube-state-metrics | grep -q "Running"; then
+    echo -e "${GREEN}SUCCESS: kube-state-metrics deployed and running${NC}"
+else
+    echo -e "${YELLOW}WARNING: kube-state-metrics may not be ready yet. Check with: kubectl get pods -n monitoring${NC}"
+fi
+echo ""
+
+# ============================================================================
+# Auto-start port forwarding for Prometheus
+# ============================================================================
+# Kill any existing port-forward on port 9090
+pkill -f "kubectl port-forward.*prometheus.*9090" 2>/dev/null || true
+sleep 1
+
+# Start port-forward in background
+echo -e "${BLUE}Starting port forward for Prometheus on port 9090 (background)...${NC}"
+kubectl port-forward -n monitoring svc/prometheus 9090:9090 --address=127.0.0.1 > /tmp/prometheus-portforward.log 2>&1 &
+PROM_PF_PID=$!
+
+# Wait a moment for port-forward to initialize
+sleep 2
+
+# Verify port-forward is working
+if kill -0 $PROM_PF_PID 2>/dev/null; then
+    # Test connection
+    if curl -s -f http://127.0.0.1:9090/-/healthy > /dev/null 2>&1; then
+        echo -e "${GREEN}SUCCESS: Prometheus port-forward active on http://localhost:9090${NC}"
+        echo -e "${BLUE}Access Prometheus at: http://localhost:9090${NC}"
+    else
+        echo -e "${YELLOW}WARNING: Prometheus port-forward started but connection test failed${NC}"
+        echo -e "${YELLOW}Port-forward may still be initializing. Check logs: cat /tmp/prometheus-portforward.log${NC}"
+    fi
+else
+    echo -e "${RED}ERROR: Prometheus port-forward failed to start${NC}"
+    echo -e "${YELLOW}Check logs: cat /tmp/prometheus-portforward.log${NC}"
 fi
 echo ""
